@@ -1,3 +1,5 @@
+mod codec;
+mod messages;
 mod protocol;
 
 use std::time::Duration;

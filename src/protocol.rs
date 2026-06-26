@@ -1,217 +1,13 @@
-use std::io::{self, Read, Write};
+use std::io;
 use std::time::{SystemTime, UNIX_EPOCH};
 use sha2::{Sha256, Digest};
+
+use crate::messages::{VersionMessage, GetHeadersMessage};
+use crate::codec::{WriteExt, ReadExt};
 
 // Configuration du réseau Regtest
 pub const REGTEST_MAGIC: [u8; 4] = [0xFA, 0xBF, 0xB5, 0xDA];
 pub const PROTOCOL_VERSION: i32 = 70015;
-
-// Extention helper traits for sequential reading/writing
-#[allow(dead_code)]
-pub trait ReadExt: Read {
-    fn read_u8(&mut self) -> io::Result<u8> {
-        let mut buf = [0u8; 1];
-        self.read_exact(&mut buf)?;
-        Ok(buf[0])
-    }
-    
-    fn read_i32_le(&mut self) -> io::Result<i32> {
-        let mut buf = [0u8; 4];
-        self.read_exact(&mut buf)?;
-        Ok(i32::from_le_bytes(buf))
-    }
-    
-    fn read_u32_le(&mut self) -> io::Result<u32> {
-        let mut buf = [0u8; 4];
-        self.read_exact(&mut buf)?;
-        Ok(u32::from_le_bytes(buf))
-    }
-    
-    fn read_i64_le(&mut self) -> io::Result<i64> {
-        let mut buf = [0u8; 8];
-        self.read_exact(&mut buf)?;
-        Ok(i64::from_le_bytes(buf))
-    }
-    
-    fn read_u64_le(&mut self) -> io::Result<u64> {
-        let mut buf = [0u8; 8];
-        self.read_exact(&mut buf)?;
-        Ok(u64::from_le_bytes(buf))
-    }
-}
-
-impl<R: Read + ?Sized> ReadExt for R {}
-
-#[allow(dead_code)]
-pub trait WriteExt: Write {
-    fn write_u8(&mut self, val: u8) -> io::Result<()> {
-        self.write_all(&[val])
-    }
-    
-    fn write_i32_le(&mut self, val: i32) -> io::Result<()> {
-        self.write_all(&val.to_le_bytes())
-    }
-    
-    fn write_u32_le(&mut self, val: u32) -> io::Result<()> {
-        self.write_all(&val.to_le_bytes())
-    }
-    
-    fn write_i64_le(&mut self, val: i64) -> io::Result<()> {
-        self.write_all(&val.to_le_bytes())
-    }
-    
-    fn write_u64_le(&mut self, val: u64) -> io::Result<()> {
-        self.write_all(&val.to_le_bytes())
-    }
-}
-
-impl<W: Write + ?Sized> WriteExt for W {}
-
-#[derive(Debug, Clone)]
-pub struct VersionMessage {
-    pub version: i32,
-    pub services: u64,
-    pub timestamp: i64,
-    pub addr_recv: [u8; 26],
-    pub addr_from: [u8; 26],
-    pub nonce: u64,
-    pub user_agent: String,
-    pub start_height: i32,
-    pub relay: u8,
-}
-
-impl VersionMessage {
-    fn write(&self, writer: &mut impl Write) -> io::Result<()> {
-        writer.write_i32_le(self.version)?;
-        writer.write_u64_le(self.services)?;
-        writer.write_i64_le(self.timestamp)?;
-        writer.write_all(&self.addr_recv)?;
-        writer.write_all(&self.addr_from)?;
-        writer.write_u64_le(self.nonce)?;
-        
-        let ua_bytes = self.user_agent.as_bytes();
-        writer.write_u8(ua_bytes.len() as u8)?;
-        writer.write_all(ua_bytes)?;
-        
-        writer.write_i32_le(self.start_height)?;
-        writer.write_u8(self.relay)?;
-        Ok(())
-    }
-
-    fn read(reader: &mut impl Read) -> io::Result<Self> {
-        let version = reader.read_i32_le()?;
-        let services = reader.read_u64_le()?;
-        let timestamp = reader.read_i64_le()?;
-        
-        let mut addr_recv = [0u8; 26];
-        reader.read_exact(&mut addr_recv)?;
-        
-        let mut addr_from = [0u8; 26];
-        reader.read_exact(&mut addr_from)?;
-        
-        let nonce = reader.read_u64_le()?;
-        
-        let ua_len = reader.read_u8()? as usize;
-        let mut ua_bytes = vec![0u8; ua_len];
-        reader.read_exact(&mut ua_bytes)?;
-        let user_agent = String::from_utf8_lossy(&ua_bytes).into_owned();
-        
-        let start_height = reader.read_i32_le()?;
-        let relay = reader.read_u8()?;
-        
-        Ok(VersionMessage {
-            version,
-            services,
-            timestamp,
-            addr_recv,
-            addr_from,
-            nonce,
-            user_agent,
-            start_height,
-            relay,
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct GetHeadersMessage {
-    pub version: u32,
-    pub hash_count: u64,
-    pub block_locator_hashes: Vec<[u8; 32]>,
-    pub stop_hash: [u8; 32],
-}
-fn read_varint(reader: &mut impl Read) -> io::Result<u64> {
-    let first_byte = reader.read_u8()?;
-    match first_byte {
-        0x00..=0xFC => Ok(first_byte as u64),
-        0xFD => {
-            let mut buf = [0u8; 2];
-            reader.read_exact(&mut buf)?;
-            Ok(u16::from_le_bytes(buf) as u64)
-        }
-        0xFE => {
-            let mut buf = [0u8; 4];
-            reader.read_exact(&mut buf)?;
-            Ok(u32::from_le_bytes(buf) as u64)
-        }
-        0xFF => {
-            let mut buf = [0u8; 8];
-            reader.read_exact(&mut buf)?;
-            Ok(u64::from_le_bytes(buf))
-        }
-    }
-}
-
-fn write_varint(writer: &mut impl Write, value: u64) -> io::Result<()> {
-    if value < 0xFD {
-        writer.write_u8(value as u8)
-    } else if value <= 0xFFFF {
-        writer.write_u8(0xFD)?;
-        writer.write_all(&(value as u16).to_le_bytes())
-    } else if value <= 0xFFFF_FFFF {
-        writer.write_u8(0xFE)?;
-        writer.write_all(&(value as u32).to_le_bytes())
-    } else {
-        writer.write_u8(0xFF)?;
-        writer.write_all(&value.to_le_bytes())
-    }
-}
-
-impl GetHeadersMessage {
-    fn write(&self, writer: &mut impl Write) -> io::Result<()> {
-        writer.write_u32_le(self.version as u32)?;
-        write_varint(writer, self.hash_count)?;
-        for hash in &self.block_locator_hashes {
-            writer.write_all(hash)?;
-        }
-        writer.write_all(&self.stop_hash)?;
-        Ok(())
-    }
-
-    fn read(reader: &mut impl Read) -> io::Result<Self> {
-        let version = reader.read_u32_le()?;
-        let hash_count = read_varint(reader)?;
-        
-        let mut block_locator_hashes = Vec::with_capacity(hash_count as usize);
-        for _ in 0..hash_count {
-            let mut hash = [0u8; 32];
-            reader.read_exact(&mut hash)?;
-            block_locator_hashes.push(hash);
-        }
-        
-        let mut stop_hash = [0u8; 32];
-        reader.read_exact(&mut stop_hash)?;
-        
-        Ok(GetHeadersMessage {
-            version,
-            hash_count,
-            block_locator_hashes,
-            stop_hash,
-        })
-    }
-}
-
-
 
 #[derive(Debug, Clone)]
 pub enum MessageCommand {
@@ -404,7 +200,6 @@ mod tests {
         let original = MessageCommand::version();
         let encoded_packet = original.encode();
         
-        // Test du décodage du paquet complet
         let decoded = MessageCommand::from_packet(&encoded_packet);
         assert!(decoded.is_some(), "Le paquet doit être décodable");
         
@@ -466,7 +261,6 @@ mod tests {
     fn test_from_packet_incomplete() {
         let packet = MessageCommand::version().encode();
         
-        // On tronque délibérément le paquet
         let incomplete = &packet[0..packet.len() - 10];
         let decoded = MessageCommand::from_packet(incomplete);
         assert!(decoded.is_none(), "Un paquet incomplet ne doit pas être parsé");
@@ -475,7 +269,6 @@ mod tests {
     #[test]
     fn test_from_packet_corrupted_magic() {
         let mut packet = MessageCommand::version().encode();
-        // Corruption des magic bytes
         packet[0] = 0x00; 
         
         let decoded = MessageCommand::from_packet(&packet);
@@ -487,7 +280,6 @@ mod tests {
         let payload = b"hello bitcoin";
         let packet = forge_packet("testcmd", payload);
         
-        // Le checksum est situé aux octets 20..24
         let expected_checksum = double_sha256(payload);
         assert_eq!(&packet[20..24], &expected_checksum[..4], "Le checksum du header doit correspondre au double SHA-256 du payload");
     }
