@@ -10,7 +10,9 @@ use std::sync::{LazyLock, Mutex};
 pub const PROTOCOL_VERSION: i32 = 70015;
 
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use clap::ValueEnum;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Network {
     Mainnet,
     Signet,

@@ -63,8 +63,20 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for TuiWriter {
     fn make_writer(&'a self) -> Self::Writer { TuiWriter }
 }
 
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+#[command(author, version, about = "Mini-nœud SPV Bitcoin interactif", long_about = None)]
+struct Args {
+    /// Le réseau Bitcoin à rejoindre (mainnet, signet, regtest)
+    #[arg(short, long, default_value = "mainnet")]
+    network: Network,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
+    
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::builder()
@@ -75,7 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .without_time()
         .init();
 
-    let network = Network::Mainnet;
+    let network = args.network;
     let pool_size = 3;
     
     if let Some(state) = SyncState::load() {
