@@ -9,6 +9,7 @@ use tokio::time::{sleep, timeout};
 use tracing::{debug, error, info, warn};
 use protocol::{MessageCommand, Network};
 use indicatif::{ProgressBar, ProgressStyle};
+use std::net::{SocketAddr, ToSocketAddrs};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -21,12 +22,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    let network = Network::Signet;
-    let target_peer = format!("127.0.0.1:{}", network.default_port());
+    let network = Network::Mainnet;
     
     info!("Démarrage du mini-nœud Bitcoin sur le réseau {:?}...", network);
 
     loop {
+        let Some(target_peer) = discover_peer(network) else {
+            error!("Impossible de trouver un nœud via DNS !");
+            sleep(Duration::from_secs(5)).await;
+            continue;
+        };
+
         info!("Tentative de connexion à {}...", target_peer);
         
         let connect_result = timeout(Duration::from_secs(5), TcpStream::connect(&target_peer)).await;
@@ -49,6 +55,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("🔄 Nouvelle tentative de reconnexion dans 5 secondes...");
         sleep(Duration::from_secs(5)).await;
     }
+}
+
+fn discover_peer(network: Network) -> Option<SocketAddr> {
+    info!("🔍 Recherche de nœuds via DNS Seeds pour {:?}...", network);
+    // DNS seeds return multiple random A records. We just pick one.
+    for seed in network.dns_seeds() {
+        let address = format!("{}:{}", seed, network.default_port());
+        if let Ok(mut addrs) = address.to_socket_addrs() {
+            if let Some(addr) = addrs.next() {
+                info!("📍 Nœud trouvé via {} : {}", seed, addr);
+                return Some(addr);
+            }
+        }
+    }
+    None
 }
 
 async fn handle_connection(stream: &mut TcpStream, network: Network) -> Result<(), Box<dyn std::error::Error>> {

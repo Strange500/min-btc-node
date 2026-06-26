@@ -56,6 +56,23 @@ impl Network {
             Network::Regtest => 18444,
         }
     }
+
+    pub fn dns_seeds(self) -> &'static [&'static str] {
+        match self {
+            Network::Mainnet => &[
+                "seed.bitcoin.sipa.be",
+                "dnsseed.bluematt.me",
+                "dnsseed.bitcoin.dashjr.org",
+                "seed.bitcoinstats.com",
+                "seed.bitcoin.jonasschnelli.ch",
+                "seed.btc.petertodd.org",
+            ],
+            Network::Signet => &[
+                "seed.signet.bitcoin.sprovoost.nl",
+            ],
+            Network::Regtest => &["127.0.0.1"],
+        }
+    }
 }
 
 
