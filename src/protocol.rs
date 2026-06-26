@@ -1,9 +1,9 @@
-use std::io;
+use std::io::{self, Read, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 use sha2::{Sha256, Digest};
 
 use crate::messages::{BlockHeader, GetHeadersMessage, HeadersMessage, VersionMessage};
-use crate::codec::{WriteExt, ReadExt};
+use crate::codec::{read_varint, write_varint};
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
@@ -97,7 +97,7 @@ fn verify_block_header(header: &BlockHeader, prev_header: Option<&BlockHeader>) 
 
     // If there's a previous header, check the linkage
     if let Some(prev) = prev_header {
-        if header.prev_block != prev.getHash() {
+        if header.prev_block != prev.get_hash() {
             return false;
         }
     }
@@ -105,20 +105,27 @@ fn verify_block_header(header: &BlockHeader, prev_header: Option<&BlockHeader>) 
     true
 }
 
-fn save_new_headers(headers: &[BlockHeader]) -> io::Result<()> {
+pub fn save_new_headers(headers: &[BlockHeader]) -> io::Result<usize> {
     let mut state = CHAIN_STATE.lock().unwrap();
+    let mut added = 0;
     // verify and save the new headers to the chain state
     for header in headers {
+        let hash = header.get_hash();
+        if state.header_cache.contains_key(&hash) {
+            continue;
+        }
+
         let prev_header = state.header_cache.get(&header.prev_block);
         if !verify_block_header(header, prev_header) {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid block header"));
         }
-        let hash = header.getHash();
+        
         state.header_cache.insert(hash, header.clone());
         state.best_block_hash = hash;
         state.best_block_height += 1;
+        added += 1;
     }
-    Ok(())
+    Ok(added)
 }
 
 
@@ -160,10 +167,21 @@ impl MessageCommand {
     }
 
     pub fn getheaders(net: Network) -> MessageCommand {
+        let best_hash = {
+            let state = CHAIN_STATE.lock().unwrap();
+            state.best_block_hash
+        };
+        
+        let locator_hash = if best_hash == [0u8; 32] {
+            net.genesis_hash()
+        } else {
+            best_hash
+        };
+
         MessageCommand::GetHeaders(GetHeadersMessage {
             version: PROTOCOL_VERSION as u32,
             hash_count: 1,
-            block_locator_hashes: vec![net.genesis_hash()],
+            block_locator_hashes: vec![locator_hash],
             stop_hash: [0u8; 32],
         })
     }
@@ -177,7 +195,7 @@ impl MessageCommand {
             }
             MessageCommand::Verack => forge_packet("verack", &[], net),
             MessageCommand::Pong(nonce) => {
-                let _ = payload.write_u64_le(*nonce);
+                payload.extend_from_slice(&nonce.to_le_bytes());
                 forge_packet("pong", &payload, net)
             }
             MessageCommand::GetHeaders(msg) => {
@@ -248,12 +266,14 @@ impl MessageCommand {
         let mut reader = io::Cursor::new(payload);
         match command {
             "ping" => {
-                let nonce = reader.read_u64_le()?;
-                Ok(MessageCommand::Ping(nonce))
+                let mut buf = [0u8; 8];
+                reader.read_exact(&mut buf)?;
+                Ok(MessageCommand::Ping(u64::from_le_bytes(buf)))
             }
             "pong" => {
-                let nonce = reader.read_u64_le()?;
-                Ok(MessageCommand::Pong(nonce))
+                let mut buf = [0u8; 8];
+                reader.read_exact(&mut buf)?;
+                Ok(MessageCommand::Pong(u64::from_le_bytes(buf)))
             }
             "version" => {
                 let version_msg = VersionMessage::read(&mut reader)?;
@@ -277,31 +297,6 @@ impl MessageCommand {
             MessageCommand::Verack => None, 
             MessageCommand::Version(_) => Some(MessageCommand::Verack),
             MessageCommand::GetHeaders(_) => Some(MessageCommand::Verack),
-
-            //verfiy and store headers in a local cache, then respond with a getheaders message if needed
-            MessageCommand::Header(headers) => {
-                if headers.headers.is_empty() {
-                    return None;
-                }
-                save_new_headers(&headers.headers)
-                    .map_err(|e| {
-                        eprintln!("Failed to save headers: {}", e);
-                        e
-                    })
-                    .ok()?;
-                
-                let best_hash = {
-                    let state = CHAIN_STATE.lock().unwrap();
-                    state.best_block_hash
-                };
-
-                Some(MessageCommand::GetHeaders(GetHeadersMessage {
-                    version: PROTOCOL_VERSION as u32,
-                    hash_count: 1,
-                    block_locator_hashes: vec![best_hash],
-                    stop_hash: [0u8; 32],
-                }))
-            },
             _ => None,
         }
     }

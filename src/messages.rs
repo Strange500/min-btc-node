@@ -1,8 +1,6 @@
 use std::io::{self, Read, Write};
-use crate::codec::{ReadExt, WriteExt, read_varint, write_varint};
+use crate::codec::{read_varint, write_varint};
 use sha2::{Sha256, Digest};
-use num_bigint::BigUint;
-
 
 #[derive(Debug, Clone)]
 pub struct VersionMessage {
@@ -19,26 +17,35 @@ pub struct VersionMessage {
 
 impl VersionMessage {
     pub fn write(&self, writer: &mut impl Write) -> io::Result<()> {
-        writer.write_i32_le(self.version)?;
-        writer.write_u64_le(self.services)?;
-        writer.write_i64_le(self.timestamp)?;
+        writer.write_all(&self.version.to_le_bytes())?;
+        writer.write_all(&self.services.to_le_bytes())?;
+        writer.write_all(&self.timestamp.to_le_bytes())?;
         writer.write_all(&self.addr_recv)?;
         writer.write_all(&self.addr_from)?;
-        writer.write_u64_le(self.nonce)?;
+        writer.write_all(&self.nonce.to_le_bytes())?;
         
         let ua_bytes = self.user_agent.as_bytes();
-        writer.write_u8(ua_bytes.len() as u8)?;
+        writer.write_all(&[ua_bytes.len() as u8])?;
         writer.write_all(ua_bytes)?;
         
-        writer.write_i32_le(self.start_height)?;
-        writer.write_u8(self.relay)?;
+        writer.write_all(&self.start_height.to_le_bytes())?;
+        writer.write_all(&[self.relay])?;
         Ok(())
     }
 
     pub fn read(reader: &mut impl Read) -> io::Result<Self> {
-        let version = reader.read_i32_le()?;
-        let services = reader.read_u64_le()?;
-        let timestamp = reader.read_i64_le()?;
+        let mut buf4 = [0u8; 4];
+        let mut buf8 = [0u8; 8];
+        let mut buf1 = [0u8; 1];
+
+        reader.read_exact(&mut buf4)?;
+        let version = i32::from_le_bytes(buf4);
+
+        reader.read_exact(&mut buf8)?;
+        let services = u64::from_le_bytes(buf8);
+
+        reader.read_exact(&mut buf8)?;
+        let timestamp = i64::from_le_bytes(buf8);
         
         let mut addr_recv = [0u8; 26];
         reader.read_exact(&mut addr_recv)?;
@@ -46,15 +53,20 @@ impl VersionMessage {
         let mut addr_from = [0u8; 26];
         reader.read_exact(&mut addr_from)?;
         
-        let nonce = reader.read_u64_le()?;
+        reader.read_exact(&mut buf8)?;
+        let nonce = u64::from_le_bytes(buf8);
         
-        let ua_len = reader.read_u8()? as usize;
+        reader.read_exact(&mut buf1)?;
+        let ua_len = buf1[0] as usize;
         let mut ua_bytes = vec![0u8; ua_len];
         reader.read_exact(&mut ua_bytes)?;
         let user_agent = String::from_utf8_lossy(&ua_bytes).into_owned();
         
-        let start_height = reader.read_i32_le()?;
-        let relay = reader.read_u8()?;
+        reader.read_exact(&mut buf4)?;
+        let start_height = i32::from_le_bytes(buf4);
+        
+        reader.read_exact(&mut buf1)?;
+        let relay = buf1[0];
         
         Ok(VersionMessage {
             version,
@@ -80,7 +92,7 @@ pub struct GetHeadersMessage {
 
 impl GetHeadersMessage {
     pub fn write(&self, writer: &mut impl Write) -> io::Result<()> {
-        writer.write_u32_le(self.version as u32)?;
+        writer.write_all(&self.version.to_le_bytes())?;
         write_varint(writer, self.hash_count)?;
         for hash in &self.block_locator_hashes {
             writer.write_all(hash)?;
@@ -106,10 +118,11 @@ pub struct BlockHeader {
 }
 
 impl BlockHeader {
-
-
     pub fn read(reader: &mut impl Read) -> io::Result<Self> {
-        let version = reader.read_i32_le()?;
+        let mut buf4 = [0u8; 4];
+
+        reader.read_exact(&mut buf4)?;
+        let version = i32::from_le_bytes(buf4);
         
         let mut prev_block = [0u8; 32];
         reader.read_exact(&mut prev_block)?;
@@ -117,9 +130,14 @@ impl BlockHeader {
         let mut merkle_root = [0u8; 32];
         reader.read_exact(&mut merkle_root)?;
         
-        let timestamp = reader.read_u32_le()?;
-        let bits = reader.read_u32_le()?;
-        let nonce = reader.read_u32_le()?;
+        reader.read_exact(&mut buf4)?;
+        let timestamp = u32::from_le_bytes(buf4);
+        
+        reader.read_exact(&mut buf4)?;
+        let bits = u32::from_le_bytes(buf4);
+        
+        reader.read_exact(&mut buf4)?;
+        let nonce = u32::from_le_bytes(buf4);
         
         let _ = read_varint(reader)?; // discard txn_count
         
@@ -133,7 +151,7 @@ impl BlockHeader {
         })
     }
 
-    fn getRawHeader(&self) -> [u8; 80] {
+    pub fn get_hash(&self) -> [u8; 32] {
         let mut raw_header = [0u8; 80];
         raw_header[0..4].copy_from_slice(&self.version.to_le_bytes());
         raw_header[4..36].copy_from_slice(&self.prev_block);
@@ -141,50 +159,46 @@ impl BlockHeader {
         raw_header[68..72].copy_from_slice(&self.timestamp.to_le_bytes());
         raw_header[72..76].copy_from_slice(&self.bits.to_le_bytes());
         raw_header[76..80].copy_from_slice(&self.nonce.to_le_bytes());
-        raw_header
+        
+        Sha256::digest(Sha256::digest(raw_header)).into()
     }
 
-    pub fn getHash(&self) -> [u8; 32] {
-        Sha256::digest(Sha256::digest(self.getRawHeader())).into()
-    }
-
-    pub fn get_target(&self) -> BigUint {
+    pub fn get_target_bytes(&self) -> [u8; 32] {
+        let mut target = [0u8; 32];
         let exponent = (self.bits >> 24) as usize;
         let mantissa = self.bits & 0x00ff_ffff;
-
-        let mut target = BigUint::from(mantissa);
-
-        if exponent >= 3 {
-            target <<= 8 * (exponent - 3);
-        } else {
-            target >>= 8 * (3 - exponent);
+        
+        if exponent >= 3 && exponent <= 32 {
+            target[exponent - 1] = (mantissa >> 16) as u8;
+            target[exponent - 2] = (mantissa >> 8) as u8;
+            target[exponent - 3] = mantissa as u8;
         }
-
         target
     }
 
     pub fn check_proof_of_work(&self) -> bool {
-        let hash_le = self.getHash();
-        let hash_int = BigUint::from_bytes_le(&hash_le);
-        let target = self.get_target();
+        let hash_le = self.get_hash();
+        let target = self.get_target_bytes();
         
-        let is_valid = hash_int <= target;
+        // Compare arrays from most significant to least significant byte (little-endian: reverse)
+        let mut is_valid = true;
+        for i in (0..32).rev() {
+            if hash_le[i] < target[i] {
+                break;
+            } else if hash_le[i] > target[i] {
+                is_valid = false;
+                break;
+            }
+        }
         
         if is_valid {
-            tracing::debug!(
-                "✅ PoW valid\nHash:   {:064x}\nTarget: {:064x}", 
-                hash_int, target
-            );
+            tracing::debug!("✅ PoW valid");
         } else {
-            tracing::warn!(
-                "❌ PoW INVALID!\nHash:   {:064x}\nTarget: {:064x}", 
-                hash_int, target
-            );
+            tracing::warn!("❌ PoW INVALID!");
         }
         
         is_valid
     }
-
 }
 
 impl HeadersMessage {
@@ -210,10 +224,9 @@ mod tests {
             prev_block: [0u8; 32],
             merkle_root: [0u8; 32],
             timestamp: 1234567890,
-            bits: 0xffffffff, // Exponent 255, Mantissa 0xffffff -> unimaginably huge target
+            bits: 0x20ffffff, // Exponent 32, Mantissa 0xffffff -> unimaginably huge target
             nonce: 0,
         };
-        // The hash should definitely be smaller than this huge target
         assert!(header.check_proof_of_work(), "PoW should be valid against a max target");
     }
 
@@ -227,7 +240,6 @@ mod tests {
             bits: 0x03000000, // Exponent 3, Mantissa 0 -> Target is 0
             nonce: 0,
         };
-        // The hash will definitely be > 0
         assert!(!header.check_proof_of_work(), "PoW should be invalid against a 0 target");
     }
 }
