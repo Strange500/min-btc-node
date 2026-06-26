@@ -14,6 +14,7 @@ const PROTOCOL_VERSION: i32 = 70015;
 enum MessageCommand {
     Version(i32, u64, i64, [u8; 26], [u8; 26], u64, String, i32, u8),
     Verack,
+    Unknown(String, Vec<u8>), // Pour les commandes non reconnues
 }
 
 
@@ -62,6 +63,7 @@ impl MessageCommand {
                 forge_packet("version", &payload)
             }
             MessageCommand::Verack => forge_packet("verack", &[]),
+            MessageCommand::Unknown(command, payload) => forge_packet(command, payload),
         }
     }
 
@@ -100,6 +102,7 @@ impl MessageCommand {
                 )
             }
             MessageCommand::Verack => "VERACK (Acknowledgement)".to_string(),
+            MessageCommand::Unknown(command, payload) => format!("UNKNOWN (Command: {}, Payload: {:?})", command, payload),
         }
     }
 
@@ -130,7 +133,7 @@ impl MessageCommand {
                 Some(MessageCommand::Version(version, services, timestamp, addr_recv, addr_from, nonce, user_agent, start_height, relay))
             }
             "verack" => Some(MessageCommand::Verack),
-            _ => None,
+            _ => Some(MessageCommand::Unknown(command.to_string(), payload.to_vec())), // Pour les commandes non reconnues
         }
     }
 
