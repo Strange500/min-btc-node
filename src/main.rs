@@ -204,6 +204,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     println!("\n🧩 Message reçu:\n{}\n", message.display());
                     pending.drain(0..consumed);
+
+                    if matches!(message, MessageCommand::Version(..)) {
+                        let verack_message = MessageCommand::Verack.encode();
+                        println!("Envoi du message 'verack'...");
+                        stream.write_all(&verack_message).await?;
+                        println!("✅ 'verack' envoyé !");
+                    }
                 }
             }
             Err(e) => {
