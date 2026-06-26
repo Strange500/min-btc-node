@@ -85,26 +85,61 @@ impl GetHeadersMessage {
         writer.write_all(&self.stop_hash)?;
         Ok(())
     }
+}
 
+#[derive(Debug, Clone)]
+pub struct HeadersMessage {
+    pub count: u64,
+    pub headers: Vec<BlockHeader>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockHeader {
+    pub version: i32,
+    pub prev_block: [u8; 32],
+    pub merkle_root: [u8; 32],
+    pub timestamp: u32,
+    pub bits: u32,
+    pub nonce: u32,
+    pub txn_count: u64,
+}
+
+impl BlockHeader {
     pub fn read(reader: &mut impl Read) -> io::Result<Self> {
-        let version = reader.read_u32_le()?;
-        let hash_count = read_varint(reader)?;
+        let version = reader.read_i32_le()?;
         
-        let mut block_locator_hashes = Vec::with_capacity(hash_count as usize);
-        for _ in 0..hash_count {
-            let mut hash = [0u8; 32];
-            reader.read_exact(&mut hash)?;
-            block_locator_hashes.push(hash);
-        }
+        let mut prev_block = [0u8; 32];
+        reader.read_exact(&mut prev_block)?;
         
-        let mut stop_hash = [0u8; 32];
-        reader.read_exact(&mut stop_hash)?;
+        let mut merkle_root = [0u8; 32];
+        reader.read_exact(&mut merkle_root)?;
         
-        Ok(GetHeadersMessage {
+        let timestamp = reader.read_u32_le()?;
+        let bits = reader.read_u32_le()?;
+        let nonce = reader.read_u32_le()?;
+        
+        let txn_count = read_varint(reader)?;
+        
+        Ok(BlockHeader {
             version,
-            hash_count,
-            block_locator_hashes,
-            stop_hash,
+            prev_block,
+            merkle_root,
+            timestamp,
+            bits,
+            nonce,
+            txn_count,
         })
+    }
+}
+
+impl HeadersMessage {
+    pub fn read(reader: &mut impl Read) -> io::Result<Self> {
+        let count = read_varint(reader)?;
+        let mut headers = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            let header = BlockHeader::read(reader)?;
+            headers.push(header);
+        }
+        Ok(HeadersMessage { count, headers })
     }
 }

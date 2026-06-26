@@ -2,12 +2,58 @@ use std::io;
 use std::time::{SystemTime, UNIX_EPOCH};
 use sha2::{Sha256, Digest};
 
-use crate::messages::{VersionMessage, GetHeadersMessage};
+use crate::messages::{VersionMessage, GetHeadersMessage, HeadersMessage};
 use crate::codec::{WriteExt, ReadExt};
 
-// Configuration du réseau Regtest
-pub const REGTEST_MAGIC: [u8; 4] = [0xFA, 0xBF, 0xB5, 0xDA];
 pub const PROTOCOL_VERSION: i32 = 70015;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Network {
+    Mainnet,
+    Signet,
+    Regtest,
+}
+
+impl Network {
+    pub fn magic(self) -> [u8; 4] {
+        match self {
+            Network::Mainnet => [0xF9, 0xBE, 0xB4, 0xD9],
+            Network::Signet => [0x0A, 0x03, 0xCF, 0x40],
+            Network::Regtest => [0xFA, 0xBF, 0xB5, 0xDA],
+        }
+    }
+
+    pub fn genesis_hash(self) -> [u8; 32] {
+        match self {
+            Network::Mainnet => [
+                0x6f, 0xe2, 0x8c, 0x0a, 0xb6, 0xf1, 0xb3, 0x72,
+                0xc1, 0xa6, 0xa2, 0x46, 0xae, 0x63, 0xf7, 0x4f,
+                0x93, 0x1e, 0x83, 0x65, 0xe1, 0x5a, 0x08, 0x9c,
+                0x68, 0xd6, 0x19, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+            Network::Signet => [
+                0xf6, 0x1e, 0xee, 0x3b, 0x63, 0xa3, 0x80, 0xa4, 
+                0x77, 0xa0, 0x63, 0xaf, 0x32, 0xb2, 0xbb, 0xc9, 
+                0x7c, 0x9f, 0xf9, 0xf0, 0x1f, 0x2c, 0x42, 0x25, 
+                0xe9, 0x73, 0x98, 0x81, 0x08, 0x00, 0x00, 0x00,
+            ],
+            Network::Regtest => [
+                0x06, 0x22, 0x6e, 0x46, 0x11, 0x1a, 0x0b, 0x59,
+                0xca, 0xaf, 0x12, 0x60, 0x43, 0xeb, 0x5b, 0xbf,
+                0x28, 0xc3, 0x4f, 0x3a, 0x5e, 0x33, 0x2a, 0x1f,
+                0xc7, 0xb2, 0xb7, 0x3c, 0xf1, 0x88, 0x91, 0x0f
+            ],
+        }
+    }
+
+    pub fn default_port(self) -> u16 {
+        match self {
+            Network::Mainnet => 8333,
+            Network::Signet => 38333,
+            Network::Regtest => 18444,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum MessageCommand {
@@ -16,14 +62,15 @@ pub enum MessageCommand {
     Ping(u64),
     Pong(u64),
     GetHeaders(GetHeadersMessage),
+    Header(HeadersMessage),
     Unknown { command: String, payload: Vec<u8> },
 }
 
 impl MessageCommand {
-    pub fn version() -> MessageCommand {
+    pub fn version(net: Network) -> MessageCommand {
         let mut addr_recv = [0u8; 26];
         addr_recv[8..24].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 127, 0, 0, 1]);
-        addr_recv[24..26].copy_from_slice(&18444u16.to_be_bytes());
+        addr_recv[24..26].copy_from_slice(&net.default_port().to_be_bytes());
 
         let mut addr_from = [0u8; 26];
         addr_from[8..24].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 127, 0, 0, 1]);
@@ -45,49 +92,41 @@ impl MessageCommand {
         })
     }
 
-    pub fn getheaders() -> MessageCommand {
-        // Regtest genesis block hash in internal byte order
-        let genesis_hash = [
-            0x06, 0x22, 0x6e, 0x46, 0x11, 0x1a, 0x0b, 0x59,
-            0xca, 0xaf, 0x12, 0x60, 0x43, 0xeb, 0x5b, 0xbf,
-            0x28, 0xc3, 0x4f, 0x3a, 0x5e, 0x33, 0x2a, 0x1f,
-            0xc7, 0xb2, 0xb7, 0x3c, 0xf1, 0x88, 0x91, 0x0f
-        ];
-
+    pub fn getheaders(net: Network) -> MessageCommand {
         MessageCommand::GetHeaders(GetHeadersMessage {
             version: PROTOCOL_VERSION as u32,
             hash_count: 1,
-            block_locator_hashes: vec![genesis_hash],
+            block_locator_hashes: vec![net.genesis_hash()],
             stop_hash: [0u8; 32],
         })
     }
 
-    pub fn encode(&self) -> Vec<u8> {
+    pub fn encode(&self, net: Network) -> Vec<u8> {
         let mut payload = Vec::new();
         match self {
             MessageCommand::Version(msg) => {
                 let _ = msg.write(&mut payload);
-                forge_packet("version", &payload)
+                forge_packet("version", &payload, net)
             }
-            MessageCommand::Verack => forge_packet("verack", &[]),
+            MessageCommand::Verack => forge_packet("verack", &[], net),
             MessageCommand::Pong(nonce) => {
                 let _ = payload.write_u64_le(*nonce);
-                forge_packet("pong", &payload)
+                forge_packet("pong", &payload, net)
             }
             MessageCommand::GetHeaders(msg) => {
                 let _ = msg.write(&mut payload);
-                forge_packet("getheaders", &payload)
+                forge_packet("getheaders", &payload, net)
             }
             _ => unreachable!("Only version, verack, pong, and getheaders are encoded"),
         }
     }
 
-    pub fn from_packet(packet: &[u8]) -> Option<(MessageCommand, usize)> {
+    pub fn from_packet(packet: &[u8], net: Network) -> Option<(MessageCommand, usize)> {
         if packet.len() < 24 {
             return None;
         }
 
-        if packet[0..4] != REGTEST_MAGIC {
+        if packet[0..4] != net.magic() {
             return None;
         }
 
@@ -127,6 +166,13 @@ impl MessageCommand {
                 format!("GETHEADERS\n  Version: {}\n  Hash Count: {}\n  Stop Hash: {:?}", 
                         msg.version, msg.hash_count, msg.stop_hash)
             }
+            MessageCommand::Header(msg) => {
+                if msg.count == 0 {
+                    "HEADERS\n  Count: 0\n  Headers: []".to_string()
+                } else {
+                    format!("HEADERS\n  Count: {}\n  [... {} headers omitted for brevity ...]", msg.count, msg.headers.len())
+                }
+            }
         }
     }
 
@@ -145,9 +191,9 @@ impl MessageCommand {
                 let version_msg = VersionMessage::read(&mut reader)?;
                 Ok(MessageCommand::Version(version_msg))
             }
-            "getheaders" => {
-                let getheaders_msg = GetHeadersMessage::read(&mut reader)?;
-                Ok(MessageCommand::GetHeaders(getheaders_msg))
+            "headers" => {
+                let headers_msg = HeadersMessage::read(&mut reader)?;
+                Ok(MessageCommand::Header(headers_msg))
             }
             "verack" => Ok(MessageCommand::Verack),
             _ => Ok(MessageCommand::Unknown {
@@ -163,6 +209,7 @@ impl MessageCommand {
             MessageCommand::Verack => None, 
             MessageCommand::Version(_) => Some(MessageCommand::Verack),
             MessageCommand::GetHeaders(_) => Some(MessageCommand::Verack),
+            MessageCommand::Header(_) => Some(MessageCommand::Verack),
             _ => None,
         }
     }
@@ -172,9 +219,9 @@ pub fn double_sha256(data: &[u8]) -> [u8; 32] {
     Sha256::digest(Sha256::digest(data)).into()
 }
 
-pub fn forge_packet(command: &str, payload: &[u8]) -> Vec<u8> {
+pub fn forge_packet(command: &str, payload: &[u8], net: Network) -> Vec<u8> {
     let mut packet = Vec::with_capacity(24 + payload.len());
-    packet.extend_from_slice(&REGTEST_MAGIC);
+    packet.extend_from_slice(&net.magic());
     
     let mut cmd_bytes = [0u8; 12];
     let cmd_len = command.len().min(12);
@@ -197,10 +244,11 @@ mod tests {
 
     #[test]
     fn test_version_encode_decode() {
-        let original = MessageCommand::version();
-        let encoded_packet = original.encode();
+        let net = Network::Regtest;
+        let original = MessageCommand::version(net);
+        let encoded_packet = original.encode(net);
         
-        let decoded = MessageCommand::from_packet(&encoded_packet);
+        let decoded = MessageCommand::from_packet(&encoded_packet, net);
         assert!(decoded.is_some(), "Le paquet doit être décodable");
         
         let (message, consumed) = decoded.unwrap();
@@ -216,36 +264,16 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_getheaders_encode_decode() {
-        let original = MessageCommand::getheaders();
-        let encoded_packet = original.encode();
 
-        let decoded = MessageCommand::from_packet(&encoded_packet);
-        assert!(decoded.is_some(), "Le paquet doit être décodable");
-
-        let (message, consumed) = decoded.unwrap();
-        assert_eq!(consumed, encoded_packet.len(), "Le paquet entier doit être consommé");
-
-        match message {
-            MessageCommand::GetHeaders(g) => {
-                assert_eq!(g.version, PROTOCOL_VERSION as u32);
-                assert_eq!(g.hash_count, 1);
-                assert_eq!(g.block_locator_hashes.len(), 1);
-                assert_eq!(g.stop_hash, [0u8; 32]);
-            }
-            _ => panic!("Expected GetHeaders message"),
-        }
-
-    }
 
     #[test]
     fn test_ping_pong_encode_decode() {
+        let net = Network::Mainnet;
         let nonce = 999;
         let pong = MessageCommand::Pong(nonce);
-        let encoded_packet = pong.encode();
+        let encoded_packet = pong.encode(net);
         
-        let decoded = MessageCommand::from_packet(&encoded_packet);
+        let decoded = MessageCommand::from_packet(&encoded_packet, net);
         assert!(decoded.is_some());
         
         let (message, _) = decoded.unwrap();
@@ -259,26 +287,29 @@ mod tests {
 
     #[test]
     fn test_from_packet_incomplete() {
-        let packet = MessageCommand::version().encode();
+        let net = Network::Regtest;
+        let packet = MessageCommand::version(net).encode(net);
         
         let incomplete = &packet[0..packet.len() - 10];
-        let decoded = MessageCommand::from_packet(incomplete);
+        let decoded = MessageCommand::from_packet(incomplete, net);
         assert!(decoded.is_none(), "Un paquet incomplet ne doit pas être parsé");
     }
 
     #[test]
     fn test_from_packet_corrupted_magic() {
-        let mut packet = MessageCommand::version().encode();
+        let net = Network::Regtest;
+        let mut packet = MessageCommand::version(net).encode(net);
         packet[0] = 0x00; 
         
-        let decoded = MessageCommand::from_packet(&packet);
+        let decoded = MessageCommand::from_packet(&packet, net);
         assert!(decoded.is_none(), "Un paquet avec des magic bytes invalides doit être rejeté");
     }
 
     #[test]
     fn test_forge_packet_checksum() {
+        let net = Network::Regtest;
         let payload = b"hello bitcoin";
-        let packet = forge_packet("testcmd", payload);
+        let packet = forge_packet("testcmd", payload, net);
         
         let expected_checksum = double_sha256(payload);
         assert_eq!(&packet[20..24], &expected_checksum[..4], "Le checksum du header doit correspondre au double SHA-256 du payload");
