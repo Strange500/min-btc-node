@@ -349,6 +349,10 @@ impl MessageCommand {
                 let version_msg = VersionMessage::read(&mut reader)?;
                 Ok(MessageCommand::Version(version_msg))
             }
+            "getheaders" => {
+                let getheaders_msg = GetHeadersMessage::read(&mut reader)?;
+                Ok(MessageCommand::GetHeaders(getheaders_msg))
+            }
             "verack" => Ok(MessageCommand::Verack),
             _ => Ok(MessageCommand::Unknown {
                 command: command.to_string(),
@@ -362,6 +366,7 @@ impl MessageCommand {
             MessageCommand::Ping(nonce) => Some(MessageCommand::Pong(*nonce)),
             MessageCommand::Verack => None, 
             MessageCommand::Version(_) => Some(MessageCommand::Verack),
+            MessageCommand::GetHeaders(_) => Some(MessageCommand::Verack),
             _ => None,
         }
     }
@@ -414,6 +419,29 @@ mod tests {
             }
             _ => panic!("Expected Version message"),
         }
+    }
+
+    #[test]
+    fn test_getheaders_encode_decode() {
+        let original = MessageCommand::getheaders();
+        let encoded_packet = original.encode();
+
+        let decoded = MessageCommand::from_packet(&encoded_packet);
+        assert!(decoded.is_some(), "Le paquet doit être décodable");
+
+        let (message, consumed) = decoded.unwrap();
+        assert_eq!(consumed, encoded_packet.len(), "Le paquet entier doit être consommé");
+
+        match message {
+            MessageCommand::GetHeaders(g) => {
+                assert_eq!(g.version, PROTOCOL_VERSION as u32);
+                assert_eq!(g.hash_count, 1);
+                assert_eq!(g.block_locator_hashes.len(), 1);
+                assert_eq!(g.stop_hash, [0u8; 32]);
+            }
+            _ => panic!("Expected GetHeaders message"),
+        }
+
     }
 
     #[test]
