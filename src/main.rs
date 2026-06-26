@@ -14,6 +14,8 @@ const PROTOCOL_VERSION: i32 = 70015;
 enum MessageCommand {
     Version(i32, u64, i64, [u8; 26], [u8; 26], u64, String, i32, u8),
     Verack,
+    Ping(u64),
+    Pong(u64),
     Unknown(String, Vec<u8>), // Pour les commandes non reconnues
 }
 
@@ -63,7 +65,11 @@ impl MessageCommand {
                 forge_packet("version", &payload)
             }
             MessageCommand::Verack => forge_packet("verack", &[]),
-            MessageCommand::Unknown(command, payload) => forge_packet(command, payload),
+            MessageCommand::Pong(nonce) => {
+                let payload = nonce.to_le_bytes();
+                forge_packet("pong", &payload)
+            }
+            _ => unreachable!("Only version, verack, and pong are encoded"),
         }
     }
 
@@ -102,13 +108,28 @@ impl MessageCommand {
                 )
             }
             MessageCommand::Verack => "VERACK (Acknowledgement)".to_string(),
+            MessageCommand::Ping(nonce) => format!("PING (Nonce: {})", nonce),
+            MessageCommand::Pong(nonce) => format!("PONG (Nonce: {})", nonce),
             MessageCommand::Unknown(command, payload) => format!("UNKNOWN (Command: {}, Payload: {:?})", command, payload),
         }
     }
 
-    #[allow(dead_code)]
     fn decipher(command: &str, payload: &[u8]) -> Option<MessageCommand> {
         match command {
+            "ping" => {
+                if payload.len() < 8 {
+                    return None; // Vérification de la taille minimale
+                }
+                let nonce = u64::from_le_bytes(payload[0..8].try_into().unwrap());
+                Some(MessageCommand::Ping(nonce))
+            }
+            "pong" => {
+                if payload.len() < 8 {
+                    return None; // Vérification de la taille minimale
+                }
+                let nonce = u64::from_le_bytes(payload[0..8].try_into().unwrap());
+                Some(MessageCommand::Pong(nonce))
+            }
             "version" => {
                 if payload.len() < 86 {
                     return None; // Vérification de la taille minimale
@@ -137,6 +158,14 @@ impl MessageCommand {
         }
     }
 
+    fn respond_to(message: &MessageCommand) -> Option<MessageCommand> {
+        match message {
+            MessageCommand::Ping(nonce) => Some(MessageCommand::Pong(*nonce)),
+            MessageCommand::Verack => None, 
+            MessageCommand::Version(_, _, _, _, _, _, _, _, _) => Some(MessageCommand::Verack),
+            _ => None,
+        }
+    }
 
 }
 
@@ -208,11 +237,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("\n🧩 Message reçu:\n{}\n", message.display());
                     pending.drain(0..consumed);
 
-                    if matches!(message, MessageCommand::Version(..)) {
-                        let verack_message = MessageCommand::Verack.encode();
-                        println!("Envoi du message 'verack'...");
-                        stream.write_all(&verack_message).await?;
-                        println!("✅ 'verack' envoyé !");
+                    let response = MessageCommand::respond_to(&message);
+                    if let Some(response_message) = response {
+                        let response_packet = response_message.encode();
+                        println!("Envoi de la réponse '{}'...", response_message.display());
+                        stream.write_all(&response_packet).await?;
                     }
                 }
             }
