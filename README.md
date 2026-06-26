@@ -47,3 +47,29 @@ Ce projet permet de consolider et de valider plusieurs compétences fondamentale
 1. **Manipulation binaire de bas niveau** : Parsing exact de structures de données binaires du protocole Bitcoin.
 2. **Programmation concurrente asynchrone** : Orchestration robuste des entrées/sorties (réseau, terminal, timers) grâce à [tokio](https://crates.io/crates/tokio).
 3. **Ingénierie de test** : Conception de parsers isolés et testables unitairement de manière intensive.
+
+---
+
+## ❄️ Exécution avec Nix
+
+Ce projet supporte [Nix Flakes](https://nixos.wiki/wiki/Flakes) pour garantir un environnement de compilation et d'exécution parfaitement reproductible, sans avoir besoin d'installer Rust manuellement.
+
+### Lancer le projet directement
+
+Si vous avez Nix avec la fonctionnalité Flakes activée, exécutez simplement :
+
+```bash
+nix run
+```
+
+Cela va automatiquement compiler le projet dans un environnement stérile et le lancer.
+
+### Environnement de développement
+
+Pour ouvrir un shell contenant tous les outils nécessaires (`cargo`, `rustc`, `clippy`...) pour développer :
+
+```bash
+nix develop
+cargo test
+cargo run
+```
