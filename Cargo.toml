@@ -7,11 +7,5 @@ edition = "2024"
 # Runtime asynchrone et réseau TCP
 tokio = { version = "1.37", features = ["full"] }
 
-# Manipulation efficace des buffers binaires
-bytes = "1.5"
-
-# Interface en ligne de commande propre
-clap = { version = "4.5", features = ["derive"] }
-
 # Hashage cryptographique (le protocole Bitcoin utilise beaucoup le double SHA-256)
 sha2 = "0.10"

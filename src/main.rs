@@ -1,7 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use bytes::{BytesMut, BufMut};
 use sha2::{Sha256, Digest};
 
 // Configuration du réseau Regtest
@@ -21,12 +20,10 @@ enum MessageCommand {
 impl MessageCommand {
     fn version() -> MessageCommand {
         let mut addr_recv = [0u8; 26];
-        addr_recv[0..8].copy_from_slice(&0u64.to_le_bytes());
         addr_recv[8..24].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 127, 0, 0, 1]);
         addr_recv[24..26].copy_from_slice(&18444u16.to_be_bytes());
 
         let mut addr_from = [0u8; 26];
-        addr_from[0..8].copy_from_slice(&0u64.to_le_bytes());
         addr_from[8..24].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 127, 0, 0, 1]);
         addr_from[24..26].copy_from_slice(&0u16.to_be_bytes());
 
@@ -49,18 +46,18 @@ impl MessageCommand {
     fn encode(&self) -> Vec<u8> {
         match self {
             MessageCommand::Version(version, services, timestamp, addr_recv, addr_from, nonce, user_agent, start_height, relay) => {
-                let mut payload = BytesMut::new();
+                let mut payload = Vec::with_capacity(81 + user_agent.len() + 5);
 
-                payload.put_i32_le(*version);
-                payload.put_u64_le(*services);
-                payload.put_i64_le(*timestamp);
-                payload.put_slice(addr_recv);
-                payload.put_slice(addr_from);
-                payload.put_u64_le(*nonce);
-                payload.put_u8(user_agent.len() as u8);
-                payload.put_slice(user_agent.as_bytes());
-                payload.put_i32_le(*start_height);
-                payload.put_u8(*relay);
+                payload.extend_from_slice(&version.to_le_bytes());
+                payload.extend_from_slice(&services.to_le_bytes());
+                payload.extend_from_slice(&timestamp.to_le_bytes());
+                payload.extend_from_slice(addr_recv);
+                payload.extend_from_slice(addr_from);
+                payload.extend_from_slice(&nonce.to_le_bytes());
+                payload.push(user_agent.len() as u8);
+                payload.extend_from_slice(user_agent.as_bytes());
+                payload.extend_from_slice(&start_height.to_le_bytes());
+                payload.push(*relay);
 
                 forge_packet("version", &payload)
             }
@@ -142,43 +139,33 @@ impl MessageCommand {
 
 /// Calcule le double SHA-256 standard de Bitcoin
 fn double_sha256(data: &[u8]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    let first_hash = hasher.finalize();
-    
-    let mut hasher = Sha256::new();
-    hasher.update(first_hash);
-    let second_hash = hasher.finalize();
-    
-    let mut result = [0u8; 32];
-    result.copy_from_slice(&second_hash);
-    result
+    Sha256::digest(Sha256::digest(data)).into()
 }
 
 /// Forge un paquet Bitcoin complet (Header + Payload) pour n'importe quelle commande
 fn forge_packet(command: &str, payload: &[u8]) -> Vec<u8> {
-    let mut packet = BytesMut::with_capacity(24 + payload.len());
+    let mut packet = Vec::with_capacity(24 + payload.len());
     
     // 1. Magic Bytes (4 octets)
-    packet.put_slice(&REGTEST_MAGIC);
+    packet.extend_from_slice(&REGTEST_MAGIC);
     
     // 2. Command Name (12 octets, complété par des zéros)
     let mut cmd_bytes = [0u8; 12];
     let cmd_len = command.len().min(12);
     cmd_bytes[..cmd_len].copy_from_slice(&command.as_bytes()[..cmd_len]);
-    packet.put_slice(&cmd_bytes);
+    packet.extend_from_slice(&cmd_bytes);
     
     // 3. Payload Length (4 octets, Little-Endian)
-    packet.put_u32_le(payload.len() as u32);
+    packet.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     
     // 4. Checksum (4 premiers octets du double SHA-256)
     let checksum = double_sha256(payload);
-    packet.put_slice(&checksum[..4]);
+    packet.extend_from_slice(&checksum[..4]);
     
     // 5. Payload
-    packet.put_slice(payload);
+    packet.extend_from_slice(payload);
     
-    packet.to_vec()
+    packet
 }
 
 #[tokio::main]
@@ -201,31 +188,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut buffer = [0u8; 1024];
     let mut pending = Vec::new();
     loop {
-        tokio::select! {
-            res = stream.read(&mut buffer) => {
-                match res {
-                    Ok(0) => {
-                        println!("Le nœud distant a fermé la connexion.");
-                        break;
-                    }
-                    Ok(n) => {
-                        println!("📥 Reçu {} octets du nœud !", n);
-                        pending.extend_from_slice(&buffer[..n]);
+        match stream.read(&mut buffer).await {
+            Ok(0) => {
+                println!("Le nœud distant a fermé la connexion.");
+                break;
+            }
+            Ok(n) => {
+                println!("📥 Reçu {} octets du nœud !", n);
+                pending.extend_from_slice(&buffer[..n]);
 
-                        loop {
-                            let Some((message, consumed)) = MessageCommand::from_packet(&pending) else {
-                                break;
-                            };
-
-                            println!("\n🧩 Message reçu:\n{}\n", message.display());
-                            pending.drain(0..consumed);
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Erreur de lecture réseau : {}", e);
+                loop {
+                    let Some((message, consumed)) = MessageCommand::from_packet(&pending) else {
                         break;
-                    }
+                    };
+
+                    println!("\n🧩 Message reçu:\n{}\n", message.display());
+                    pending.drain(0..consumed);
                 }
+            }
+            Err(e) => {
+                eprintln!("Erreur de lecture réseau : {}", e);
+                break;
             }
         }
     }
