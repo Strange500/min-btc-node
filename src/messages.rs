@@ -1,5 +1,8 @@
 use std::io::{self, Read, Write};
 use crate::codec::{ReadExt, WriteExt, read_varint, write_varint};
+use sha2::{Sha256, Digest};
+use num_bigint::BigUint;
+
 
 #[derive(Debug, Clone)]
 pub struct VersionMessage {
@@ -89,7 +92,6 @@ impl GetHeadersMessage {
 
 #[derive(Debug, Clone)]
 pub struct HeadersMessage {
-    pub count: u64,
     pub headers: Vec<BlockHeader>,
 }
 
@@ -101,10 +103,11 @@ pub struct BlockHeader {
     pub timestamp: u32,
     pub bits: u32,
     pub nonce: u32,
-    pub txn_count: u64,
 }
 
 impl BlockHeader {
+
+
     pub fn read(reader: &mut impl Read) -> io::Result<Self> {
         let version = reader.read_i32_le()?;
         
@@ -118,7 +121,7 @@ impl BlockHeader {
         let bits = reader.read_u32_le()?;
         let nonce = reader.read_u32_le()?;
         
-        let txn_count = read_varint(reader)?;
+        let _ = read_varint(reader)?; // discard txn_count
         
         Ok(BlockHeader {
             version,
@@ -127,9 +130,61 @@ impl BlockHeader {
             timestamp,
             bits,
             nonce,
-            txn_count,
         })
     }
+
+    fn getRawHeader(&self) -> [u8; 80] {
+        let mut raw_header = [0u8; 80];
+        raw_header[0..4].copy_from_slice(&self.version.to_le_bytes());
+        raw_header[4..36].copy_from_slice(&self.prev_block);
+        raw_header[36..68].copy_from_slice(&self.merkle_root);
+        raw_header[68..72].copy_from_slice(&self.timestamp.to_le_bytes());
+        raw_header[72..76].copy_from_slice(&self.bits.to_le_bytes());
+        raw_header[76..80].copy_from_slice(&self.nonce.to_le_bytes());
+        raw_header
+    }
+
+    pub fn getHash(&self) -> [u8; 32] {
+        Sha256::digest(Sha256::digest(self.getRawHeader())).into()
+    }
+
+    pub fn get_target(&self) -> BigUint {
+        let exponent = (self.bits >> 24) as usize;
+        let mantissa = self.bits & 0x00ff_ffff;
+
+        let mut target = BigUint::from(mantissa);
+
+        if exponent >= 3 {
+            target <<= 8 * (exponent - 3);
+        } else {
+            target >>= 8 * (3 - exponent);
+        }
+
+        target
+    }
+
+    pub fn check_proof_of_work(&self) -> bool {
+        let hash_le = self.getHash();
+        let hash_int = BigUint::from_bytes_le(&hash_le);
+        let target = self.get_target();
+        
+        let is_valid = hash_int <= target;
+        
+        if is_valid {
+            tracing::debug!(
+                "✅ PoW valid\nHash:   {:064x}\nTarget: {:064x}", 
+                hash_int, target
+            );
+        } else {
+            tracing::warn!(
+                "❌ PoW INVALID!\nHash:   {:064x}\nTarget: {:064x}", 
+                hash_int, target
+            );
+        }
+        
+        is_valid
+    }
+
 }
 
 impl HeadersMessage {
@@ -140,6 +195,39 @@ impl HeadersMessage {
             let header = BlockHeader::read(reader)?;
             headers.push(header);
         }
-        Ok(HeadersMessage { count, headers })
+        Ok(HeadersMessage { headers })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_proof_of_work_valid_huge_target() {
+        let header = BlockHeader {
+            version: 1,
+            prev_block: [0u8; 32],
+            merkle_root: [0u8; 32],
+            timestamp: 1234567890,
+            bits: 0xffffffff, // Exponent 255, Mantissa 0xffffff -> unimaginably huge target
+            nonce: 0,
+        };
+        // The hash should definitely be smaller than this huge target
+        assert!(header.check_proof_of_work(), "PoW should be valid against a max target");
+    }
+
+    #[test]
+    fn test_proof_of_work_invalid_tiny_target() {
+        let header = BlockHeader {
+            version: 1,
+            prev_block: [0u8; 32],
+            merkle_root: [0u8; 32],
+            timestamp: 1234567890,
+            bits: 0x03000000, // Exponent 3, Mantissa 0 -> Target is 0
+            nonce: 0,
+        };
+        // The hash will definitely be > 0
+        assert!(!header.check_proof_of_work(), "PoW should be invalid against a 0 target");
     }
 }
