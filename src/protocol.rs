@@ -21,6 +21,12 @@ pub trait ReadExt: Read {
         Ok(i32::from_le_bytes(buf))
     }
     
+    fn read_u32_le(&mut self) -> io::Result<u32> {
+        let mut buf = [0u8; 4];
+        self.read_exact(&mut buf)?;
+        Ok(u32::from_le_bytes(buf))
+    }
+    
     fn read_i64_le(&mut self) -> io::Result<i64> {
         let mut buf = [0u8; 8];
         self.read_exact(&mut buf)?;
@@ -61,13 +67,6 @@ pub trait WriteExt: Write {
 
 impl<W: Write + ?Sized> WriteExt for W {}
 
-pub trait Codec {
-    fn write(&self, writer: &mut impl Write) -> io::Result<()>;
-    fn read(reader: &mut impl Read) -> io::Result<Self>
-    where
-        Self: Sized;
-}
-
 #[derive(Debug, Clone)]
 pub struct VersionMessage {
     pub version: i32,
@@ -81,7 +80,7 @@ pub struct VersionMessage {
     pub relay: u8,
 }
 
-impl Codec for VersionMessage {
+impl VersionMessage {
     fn write(&self, writer: &mut impl Write) -> io::Result<()> {
         writer.write_i32_le(self.version)?;
         writer.write_u64_le(self.services)?;
@@ -135,11 +134,92 @@ impl Codec for VersionMessage {
 }
 
 #[derive(Debug, Clone)]
+pub struct GetHeadersMessage {
+    pub version: u32,
+    pub hash_count: u64,
+    pub block_locator_hashes: Vec<[u8; 32]>,
+    pub stop_hash: [u8; 32],
+}
+fn read_varint(reader: &mut impl Read) -> io::Result<u64> {
+    let first_byte = reader.read_u8()?;
+    match first_byte {
+        0x00..=0xFC => Ok(first_byte as u64),
+        0xFD => {
+            let mut buf = [0u8; 2];
+            reader.read_exact(&mut buf)?;
+            Ok(u16::from_le_bytes(buf) as u64)
+        }
+        0xFE => {
+            let mut buf = [0u8; 4];
+            reader.read_exact(&mut buf)?;
+            Ok(u32::from_le_bytes(buf) as u64)
+        }
+        0xFF => {
+            let mut buf = [0u8; 8];
+            reader.read_exact(&mut buf)?;
+            Ok(u64::from_le_bytes(buf))
+        }
+    }
+}
+
+fn write_varint(writer: &mut impl Write, value: u64) -> io::Result<()> {
+    if value < 0xFD {
+        writer.write_u8(value as u8)
+    } else if value <= 0xFFFF {
+        writer.write_u8(0xFD)?;
+        writer.write_all(&(value as u16).to_le_bytes())
+    } else if value <= 0xFFFF_FFFF {
+        writer.write_u8(0xFE)?;
+        writer.write_all(&(value as u32).to_le_bytes())
+    } else {
+        writer.write_u8(0xFF)?;
+        writer.write_all(&value.to_le_bytes())
+    }
+}
+
+impl GetHeadersMessage {
+    fn write(&self, writer: &mut impl Write) -> io::Result<()> {
+        writer.write_u32_le(self.version as u32)?;
+        write_varint(writer, self.hash_count)?;
+        for hash in &self.block_locator_hashes {
+            writer.write_all(hash)?;
+        }
+        writer.write_all(&self.stop_hash)?;
+        Ok(())
+    }
+
+    fn read(reader: &mut impl Read) -> io::Result<Self> {
+        let version = reader.read_u32_le()?;
+        let hash_count = read_varint(reader)?;
+        
+        let mut block_locator_hashes = Vec::with_capacity(hash_count as usize);
+        for _ in 0..hash_count {
+            let mut hash = [0u8; 32];
+            reader.read_exact(&mut hash)?;
+            block_locator_hashes.push(hash);
+        }
+        
+        let mut stop_hash = [0u8; 32];
+        reader.read_exact(&mut stop_hash)?;
+        
+        Ok(GetHeadersMessage {
+            version,
+            hash_count,
+            block_locator_hashes,
+            stop_hash,
+        })
+    }
+}
+
+
+
+#[derive(Debug, Clone)]
 pub enum MessageCommand {
     Version(VersionMessage),
     Verack,
     Ping(u64),
     Pong(u64),
+    GetHeaders(GetHeadersMessage),
     Unknown { command: String, payload: Vec<u8> },
 }
 
@@ -169,6 +249,23 @@ impl MessageCommand {
         })
     }
 
+    pub fn getheaders() -> MessageCommand {
+        // Regtest genesis block hash in internal byte order
+        let genesis_hash = [
+            0x06, 0x22, 0x6e, 0x46, 0x11, 0x1a, 0x0b, 0x59,
+            0xca, 0xaf, 0x12, 0x60, 0x43, 0xeb, 0x5b, 0xbf,
+            0x28, 0xc3, 0x4f, 0x3a, 0x5e, 0x33, 0x2a, 0x1f,
+            0xc7, 0xb2, 0xb7, 0x3c, 0xf1, 0x88, 0x91, 0x0f
+        ];
+
+        MessageCommand::GetHeaders(GetHeadersMessage {
+            version: PROTOCOL_VERSION as u32,
+            hash_count: 1,
+            block_locator_hashes: vec![genesis_hash],
+            stop_hash: [0u8; 32],
+        })
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         let mut payload = Vec::new();
         match self {
@@ -181,7 +278,11 @@ impl MessageCommand {
                 let _ = payload.write_u64_le(*nonce);
                 forge_packet("pong", &payload)
             }
-            _ => unreachable!("Only version, verack, and pong are encoded"),
+            MessageCommand::GetHeaders(msg) => {
+                let _ = msg.write(&mut payload);
+                forge_packet("getheaders", &payload)
+            }
+            _ => unreachable!("Only version, verack, pong, and getheaders are encoded"),
         }
     }
 
@@ -225,6 +326,10 @@ impl MessageCommand {
             MessageCommand::Pong(nonce) => format!("PONG (Nonce: {})", nonce),
             MessageCommand::Unknown { command, payload } => {
                 format!("UNKNOWN (Command: {}, Payload: {:?})", command, payload)
+            }
+            MessageCommand::GetHeaders(msg) => {
+                format!("GETHEADERS\n  Version: {}\n  Hash Count: {}\n  Stop Hash: {:?}", 
+                        msg.version, msg.hash_count, msg.stop_hash)
             }
         }
     }

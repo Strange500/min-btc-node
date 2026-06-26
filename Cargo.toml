@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 # Runtime asynchrone et réseau TCP
-tokio = { version = "1.37", features = ["full"] }
+tokio = { version = "1.37", features = ["net", "rt-multi-thread", "macros", "time", "io-util"] }
 
 # Hashage cryptographique (le protocole Bitcoin utilise beaucoup le double SHA-256)
 sha2 = "0.10"

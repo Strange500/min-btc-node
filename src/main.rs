@@ -83,6 +83,14 @@ async fn handle_connection(stream: &mut TcpStream) -> Result<(), Box<dyn std::er
                 debug!("Envoi de la réponse '{}'...", response_message.display());
                 stream.write_all(&response_packet).await?;
             }
+
+            // Une fois le peer prêt (Handshake terminé avec le Verack du peer)
+            if matches!(message, MessageCommand::Verack) {
+                info!("🤝 Handshake complété ! Envoi de 'getheaders'...");
+                let getheaders = MessageCommand::getheaders();
+                let packet = getheaders.encode();
+                stream.write_all(&packet).await?;
+            }
         }
     }
 
