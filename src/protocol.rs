@@ -79,6 +79,7 @@ impl Network {
 pub struct ChainState {
     pub best_block_hash: [u8; 32],
     pub best_block_height: u32,
+    pub target_height: u32,
     pub header_cache: HashMap<[u8; 32], BlockHeader>,
 }
 
@@ -86,6 +87,7 @@ pub static CHAIN_STATE: LazyLock<Mutex<ChainState>> = LazyLock::new(|| {
     Mutex::new(ChainState {
         best_block_hash: [0u8; 32],
         best_block_height: 0,
+        target_height: 0,
         header_cache: HashMap::new(),
     })
 });

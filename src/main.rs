@@ -1,6 +1,7 @@
 mod codec;
 mod messages;
 mod protocol;
+mod tui;
 
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -8,7 +9,6 @@ use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 use tracing::{debug, error, info, warn};
 use protocol::{MessageCommand, Network};
-use indicatif::{ProgressBar, ProgressStyle};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -36,6 +36,7 @@ impl SyncState {
 struct SyncNodeGuard {
     has_sync_node: Arc<AtomicBool>,
     pub is_sync_node: bool,
+    pub peer_idx: usize,
 }
 
 impl Drop for SyncNodeGuard {
@@ -43,7 +44,23 @@ impl Drop for SyncNodeGuard {
         if self.is_sync_node {
             self.has_sync_node.store(false, Ordering::SeqCst);
         }
+        tui::update_peer(self.peer_idx, "".to_string(), "Déconnecté ❌".to_string());
     }
+}
+
+struct TuiWriter;
+impl std::io::Write for TuiWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let s = String::from_utf8_lossy(buf).to_string();
+        tui::add_log(s.trim_end().to_string());
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for TuiWriter {
+    type Writer = TuiWriter;
+    fn make_writer(&'a self) -> Self::Writer { TuiWriter }
 }
 
 #[tokio::main]
@@ -54,9 +71,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
                 .from_env_lossy(),
         )
+        .with_writer(TuiWriter)
+        .without_time()
         .init();
 
-    let network = Network::Signet;
+    let network = Network::Mainnet;
     let pool_size = 3;
     
     if let Some(state) = SyncState::load() {
@@ -68,7 +87,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Démarrage du mini-nœud Bitcoin sur le réseau {:?} avec un pool de {} pairs...", network, pool_size);
 
-    // 1. Resolve DNS once
     let peer_pool = discover_peers(network);
     if peer_pool.is_empty() {
         error!("Impossible de trouver des nœuds via DNS !");
@@ -79,27 +97,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let peer_pool = Arc::new(peer_pool);
     let peer_index = Arc::new(AtomicUsize::new(0));
 
-    let pb = ProgressBar::new(0);
-    pb.set_style(ProgressStyle::default_bar()
-        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} blocs ({percent}%) {msg}")
-        .unwrap()
-        .progress_chars("#>-"));
-
     let has_sync_node = Arc::new(AtomicBool::new(false));
-    let mut handles = Vec::new();
 
-    for _ in 0..pool_size {
-        let pb = pb.clone();
+    for peer_idx in 0..pool_size {
         let has_sync_node = has_sync_node.clone();
         let peer_pool = peer_pool.clone();
         let peer_index = peer_index.clone();
         
-        handles.push(tokio::spawn(async move {
+        tokio::spawn(async move {
             loop {
-                // Round-robin over the shared pool
                 let idx = peer_index.fetch_add(1, Ordering::SeqCst) % peer_pool.len();
                 let target_peer = peer_pool[idx];
 
+                tui::update_peer(peer_idx, target_peer.to_string(), "Connexion... ⏳".to_string());
                 info!("Tentative de connexion à {}...", target_peer);
                 
                 let connect_result = timeout(Duration::from_secs(5), TcpStream::connect(&target_peer)).await;
@@ -107,27 +117,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match connect_result {
                     Ok(Ok(mut stream)) => {
                         info!("✅ Connecté avec succès au peer {}!", target_peer);
-                        if let Err(e) = handle_connection(&mut stream, network, pb.clone(), has_sync_node.clone()).await {
-                            error!("❌ Erreur de connexion avec {} : {}", target_peer, e);
+                        tui::update_peer(peer_idx, target_peer.to_string(), "Connecté 🤝".to_string());
+                        
+                        if let Err(e) = handle_connection(&mut stream, network, peer_idx, target_peer, has_sync_node.clone()).await {
+                            error!("❌ Erreur avec {} : {}", target_peer, e);
                         }
                     }
                     Ok(Err(e)) => {
                         warn!("❌ Impossible de se connecter à {} : {}", target_peer, e);
                     }
                     Err(_) => {
-                        warn!("⏱️ Timeout : Le nœud {} met trop de temps à répondre.", target_peer);
+                        warn!("⏱️ Timeout : Le nœud {} met trop de temps.", target_peer);
                     }
                 }
                 
-                info!("🔄 Nouvelle tentative de reconnexion dans 5 secondes...");
+                tui::update_peer(peer_idx, target_peer.to_string(), "Déconnecté ❌".to_string());
                 sleep(Duration::from_secs(5)).await;
             }
-        }));
+        });
     }
 
-    for handle in handles {
-        let _ = handle.await;
-    }
+    // Le TUI tourne sur le thread principal et bloque
+    tui::run_tui().await?;
 
     Ok(())
 }
@@ -144,21 +155,19 @@ fn discover_peers(network: Network) -> Vec<SocketAddr> {
     peers
 }
 
-async fn handle_connection(stream: &mut TcpStream, network: Network, pb: ProgressBar, has_sync_node: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
+async fn handle_connection(stream: &mut TcpStream, network: Network, peer_idx: usize, target_peer: SocketAddr, has_sync_node: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
     let version_message = MessageCommand::version(network).encode(network);
 
-    debug!("Envoi du message 'version'...");
     stream.write_all(&version_message).await?;
-    debug!("🚀 Message envoyé ! En attente des données réseau...");
 
     let mut buffer = [0u8; 1024];
     let mut pending = Vec::new();
-    let mut guard = SyncNodeGuard { has_sync_node, is_sync_node: false };
+    let mut guard = SyncNodeGuard { has_sync_node, is_sync_node: false, peer_idx };
     
     loop {
         let n = stream.read(&mut buffer).await?;
         if n == 0 {
-            info!("🔌 Le nœud distant a fermé la connexion proprement.");
+            info!("🔌 Le nœud {} a fermé la connexion proprement.", target_peer);
             break;
         }
         
@@ -171,10 +180,10 @@ async fn handle_connection(stream: &mut TcpStream, network: Network, pb: Progres
             pending.drain(0..consumed);
 
             if let MessageCommand::Version(ref v) = message {
-                let current_len = pb.length().unwrap_or(0);
-                let new_len = v.start_height as u64;
-                if new_len > current_len {
-                    pb.set_length(new_len);
+                let new_len = v.start_height as u32;
+                let mut chain = protocol::CHAIN_STATE.lock().unwrap();
+                if new_len > chain.target_height {
+                    chain.target_height = new_len;
                 }
             }
 
@@ -200,34 +209,28 @@ async fn handle_connection(stream: &mut TcpStream, network: Network, pb: Progres
                     }.save();
                 }
 
-                pb.set_position(height as u64);
-                if height as u64 >= pb.length().unwrap_or(0) && pb.length().unwrap_or(0) > 0 {
-                    pb.set_message("✅ Synchronisation terminée !");
-                }
-
                 if guard.is_sync_node && added > 0 && headers_len == 2000 {
                     sleep(Duration::from_millis(50)).await;
                     let getheaders = MessageCommand::getheaders(network);
                     stream.write_all(&getheaders.encode(network)).await?;
                 }
             } else {
-                info!("🧩 Message reçu:\n{}", message.display());
-                
                 if let Some(response_message) = MessageCommand::respond_to(&message) {
                     let response_packet = response_message.encode(network);
-                    debug!("Envoi de la réponse '{}'...", response_message.display());
                     stream.write_all(&response_packet).await?;
                 }
 
                 if matches!(message, MessageCommand::Verack) {
                     if !guard.has_sync_node.swap(true, Ordering::SeqCst) {
                         guard.is_sync_node = true;
-                        info!("👑 Handshake complété ! Ce pair devient le Sync Node. Envoi de 'getheaders'...");
+                        tui::update_peer(peer_idx, target_peer.to_string(), "Sync Node 👑".to_string());
+                        info!("👑 {} devient le Sync Node. Envoi de 'getheaders'...", target_peer);
+                        
                         let getheaders = MessageCommand::getheaders(network);
-                        let packet = getheaders.encode(network);
-                        stream.write_all(&packet).await?;
+                        stream.write_all(&getheaders.encode(network)).await?;
                     } else {
-                        info!("🎧 Handshake complété ! Ce pair est en Standby (Listener).");
+                        tui::update_peer(peer_idx, target_peer.to_string(), "Standby 🎧".to_string());
+                        info!("🎧 {} est en Standby (Listener).", target_peer);
                     }
                 }
             }
