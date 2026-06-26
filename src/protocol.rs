@@ -284,3 +284,78 @@ pub fn forge_packet(command: &str, payload: &[u8]) -> Vec<u8> {
     
     packet
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_version_encode_decode() {
+        let original = MessageCommand::version();
+        let encoded_packet = original.encode();
+        
+        // Test du décodage du paquet complet
+        let decoded = MessageCommand::from_packet(&encoded_packet);
+        assert!(decoded.is_some(), "Le paquet doit être décodable");
+        
+        let (message, consumed) = decoded.unwrap();
+        assert_eq!(consumed, encoded_packet.len(), "Le paquet entier doit être consommé");
+        
+        match message {
+            MessageCommand::Version(v) => {
+                assert_eq!(v.version, PROTOCOL_VERSION);
+                assert_eq!(v.user_agent, "/mini-node:0.1/");
+                assert_eq!(v.nonce, 123456789);
+            }
+            _ => panic!("Expected Version message"),
+        }
+    }
+
+    #[test]
+    fn test_ping_pong_encode_decode() {
+        let nonce = 999;
+        let pong = MessageCommand::Pong(nonce);
+        let encoded_packet = pong.encode();
+        
+        let decoded = MessageCommand::from_packet(&encoded_packet);
+        assert!(decoded.is_some());
+        
+        let (message, _) = decoded.unwrap();
+        match message {
+            MessageCommand::Pong(decoded_nonce) => {
+                assert_eq!(decoded_nonce, nonce);
+            }
+            _ => panic!("Expected Pong message"),
+        }
+    }
+
+    #[test]
+    fn test_from_packet_incomplete() {
+        let packet = MessageCommand::version().encode();
+        
+        // On tronque délibérément le paquet
+        let incomplete = &packet[0..packet.len() - 10];
+        let decoded = MessageCommand::from_packet(incomplete);
+        assert!(decoded.is_none(), "Un paquet incomplet ne doit pas être parsé");
+    }
+
+    #[test]
+    fn test_from_packet_corrupted_magic() {
+        let mut packet = MessageCommand::version().encode();
+        // Corruption des magic bytes
+        packet[0] = 0x00; 
+        
+        let decoded = MessageCommand::from_packet(&packet);
+        assert!(decoded.is_none(), "Un paquet avec des magic bytes invalides doit être rejeté");
+    }
+
+    #[test]
+    fn test_forge_packet_checksum() {
+        let payload = b"hello bitcoin";
+        let packet = forge_packet("testcmd", payload);
+        
+        // Le checksum est situé aux octets 20..24
+        let expected_checksum = double_sha256(payload);
+        assert_eq!(&packet[20..24], &expected_checksum[..4], "Le checksum du header doit correspondre au double SHA-256 du payload");
+    }
+}
