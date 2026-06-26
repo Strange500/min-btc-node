@@ -8,6 +8,7 @@ use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 use tracing::{debug, error, info, warn};
 use protocol::{MessageCommand, Network};
+use indicatif::{ProgressBar, ProgressStyle};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -61,6 +62,7 @@ async fn handle_connection(stream: &mut TcpStream, network: Network) -> Result<(
     // 2. Boucle de lecture asynchrone pour traiter le flux réseau
     let mut buffer = [0u8; 1024];
     let mut pending = Vec::new();
+    let mut pb: Option<ProgressBar> = None;
     
     loop {
         let n = stream.read(&mut buffer).await?;
@@ -75,9 +77,28 @@ async fn handle_connection(stream: &mut TcpStream, network: Network) -> Result<(
             let Some((message, consumed)) = MessageCommand::from_packet(&pending, network) else {
                 break;
             };
-
-            info!("🧩 Message reçu:\n{}", message.display());
             pending.drain(0..consumed);
+
+            if let MessageCommand::Version(ref v) = message {
+                let bar = ProgressBar::new(v.start_height as u64);
+                bar.set_style(ProgressStyle::default_bar()
+                    .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} blocs ({percent}%) {msg}")
+                    .unwrap()
+                    .progress_chars("#>-"));
+                pb = Some(bar);
+            }
+
+            if matches!(message, MessageCommand::Header(_)) {
+                if let Some(ref bar) = pb {
+                    let height = protocol::CHAIN_STATE.lock().unwrap().best_block_height as u64;
+                    bar.set_position(height);
+                    if height >= bar.length().unwrap_or(0) {
+                        bar.finish_with_message("✅ Synchronisation terminée !");
+                    }
+                }
+            } else {
+                info!("🧩 Message reçu:\n{}", message.display());
+            }
 
             // Réponse automatique (ex: pong en réponse à un ping, ou verack après version)
             if let Some(response_message) = MessageCommand::respond_to(&message) {
