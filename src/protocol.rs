@@ -1,3 +1,4 @@
+use std::io::{self, Read, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 use sha2::{Sha256, Digest};
 
@@ -5,14 +6,141 @@ use sha2::{Sha256, Digest};
 pub const REGTEST_MAGIC: [u8; 4] = [0xFA, 0xBF, 0xB5, 0xDA];
 pub const PROTOCOL_VERSION: i32 = 70015;
 
-#[derive(Debug)]
+// Extention helper traits for sequential reading/writing
 #[allow(dead_code)]
+pub trait ReadExt: Read {
+    fn read_u8(&mut self) -> io::Result<u8> {
+        let mut buf = [0u8; 1];
+        self.read_exact(&mut buf)?;
+        Ok(buf[0])
+    }
+    
+    fn read_i32_le(&mut self) -> io::Result<i32> {
+        let mut buf = [0u8; 4];
+        self.read_exact(&mut buf)?;
+        Ok(i32::from_le_bytes(buf))
+    }
+    
+    fn read_i64_le(&mut self) -> io::Result<i64> {
+        let mut buf = [0u8; 8];
+        self.read_exact(&mut buf)?;
+        Ok(i64::from_le_bytes(buf))
+    }
+    
+    fn read_u64_le(&mut self) -> io::Result<u64> {
+        let mut buf = [0u8; 8];
+        self.read_exact(&mut buf)?;
+        Ok(u64::from_le_bytes(buf))
+    }
+}
+
+impl<R: Read + ?Sized> ReadExt for R {}
+
+#[allow(dead_code)]
+pub trait WriteExt: Write {
+    fn write_u8(&mut self, val: u8) -> io::Result<()> {
+        self.write_all(&[val])
+    }
+    
+    fn write_i32_le(&mut self, val: i32) -> io::Result<()> {
+        self.write_all(&val.to_le_bytes())
+    }
+    
+    fn write_u32_le(&mut self, val: u32) -> io::Result<()> {
+        self.write_all(&val.to_le_bytes())
+    }
+    
+    fn write_i64_le(&mut self, val: i64) -> io::Result<()> {
+        self.write_all(&val.to_le_bytes())
+    }
+    
+    fn write_u64_le(&mut self, val: u64) -> io::Result<()> {
+        self.write_all(&val.to_le_bytes())
+    }
+}
+
+impl<W: Write + ?Sized> WriteExt for W {}
+
+pub trait Codec {
+    fn write(&self, writer: &mut impl Write) -> io::Result<()>;
+    fn read(reader: &mut impl Read) -> io::Result<Self>
+    where
+        Self: Sized;
+}
+
+#[derive(Debug, Clone)]
+pub struct VersionMessage {
+    pub version: i32,
+    pub services: u64,
+    pub timestamp: i64,
+    pub addr_recv: [u8; 26],
+    pub addr_from: [u8; 26],
+    pub nonce: u64,
+    pub user_agent: String,
+    pub start_height: i32,
+    pub relay: u8,
+}
+
+impl Codec for VersionMessage {
+    fn write(&self, writer: &mut impl Write) -> io::Result<()> {
+        writer.write_i32_le(self.version)?;
+        writer.write_u64_le(self.services)?;
+        writer.write_i64_le(self.timestamp)?;
+        writer.write_all(&self.addr_recv)?;
+        writer.write_all(&self.addr_from)?;
+        writer.write_u64_le(self.nonce)?;
+        
+        let ua_bytes = self.user_agent.as_bytes();
+        writer.write_u8(ua_bytes.len() as u8)?;
+        writer.write_all(ua_bytes)?;
+        
+        writer.write_i32_le(self.start_height)?;
+        writer.write_u8(self.relay)?;
+        Ok(())
+    }
+
+    fn read(reader: &mut impl Read) -> io::Result<Self> {
+        let version = reader.read_i32_le()?;
+        let services = reader.read_u64_le()?;
+        let timestamp = reader.read_i64_le()?;
+        
+        let mut addr_recv = [0u8; 26];
+        reader.read_exact(&mut addr_recv)?;
+        
+        let mut addr_from = [0u8; 26];
+        reader.read_exact(&mut addr_from)?;
+        
+        let nonce = reader.read_u64_le()?;
+        
+        let ua_len = reader.read_u8()? as usize;
+        let mut ua_bytes = vec![0u8; ua_len];
+        reader.read_exact(&mut ua_bytes)?;
+        let user_agent = String::from_utf8_lossy(&ua_bytes).into_owned();
+        
+        let start_height = reader.read_i32_le()?;
+        let relay = reader.read_u8()?;
+        
+        Ok(VersionMessage {
+            version,
+            services,
+            timestamp,
+            addr_recv,
+            addr_from,
+            nonce,
+            user_agent,
+            start_height,
+            relay,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum MessageCommand {
-    Version(i32, u64, i64, [u8; 26], [u8; 26], u64, String, i32, u8),
+    Version(VersionMessage),
     Verack,
     Ping(u64),
     Pong(u64),
-    Unknown(String, Vec<u8>), // Pour les commandes non reconnues
+    Unknown { command: String, payload: Vec<u8> },
 }
 
 impl MessageCommand {
@@ -25,43 +153,32 @@ impl MessageCommand {
         addr_from[8..24].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 127, 0, 0, 1]);
         addr_from[24..26].copy_from_slice(&0u16.to_be_bytes());
 
-        MessageCommand::Version(
-            PROTOCOL_VERSION,
-            0,
-            SystemTime::now()
+        MessageCommand::Version(VersionMessage {
+            version: PROTOCOL_VERSION,
+            services: 0,
+            timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs() as i64,
             addr_recv,
             addr_from,
-            123456789,
-            "/mini-node:0.1/".to_string(),
-            0,
-            0,
-        )
+            nonce: 123456789,
+            user_agent: "/mini-node:0.1/".to_string(),
+            start_height: 0,
+            relay: 0,
+        })
     }
 
     pub fn encode(&self) -> Vec<u8> {
+        let mut payload = Vec::new();
         match self {
-            MessageCommand::Version(version, services, timestamp, addr_recv, addr_from, nonce, user_agent, start_height, relay) => {
-                let mut payload = Vec::with_capacity(81 + user_agent.len() + 5);
-
-                payload.extend_from_slice(&version.to_le_bytes());
-                payload.extend_from_slice(&services.to_le_bytes());
-                payload.extend_from_slice(&timestamp.to_le_bytes());
-                payload.extend_from_slice(addr_recv);
-                payload.extend_from_slice(addr_from);
-                payload.extend_from_slice(&nonce.to_le_bytes());
-                payload.push(user_agent.len() as u8);
-                payload.extend_from_slice(user_agent.as_bytes());
-                payload.extend_from_slice(&start_height.to_le_bytes());
-                payload.push(*relay);
-
+            MessageCommand::Version(msg) => {
+                let _ = msg.write(&mut payload);
                 forge_packet("version", &payload)
             }
             MessageCommand::Verack => forge_packet("verack", &[]),
             MessageCommand::Pong(nonce) => {
-                let payload = nonce.to_le_bytes();
+                let _ = payload.write_u64_le(*nonce);
                 forge_packet("pong", &payload)
             }
             _ => unreachable!("Only version, verack, and pong are encoded"),
@@ -81,74 +198,57 @@ impl MessageCommand {
         let command_len = command_bytes.iter().position(|byte| *byte == 0).unwrap_or(12);
         let command = std::str::from_utf8(&command_bytes[..command_len]).ok()?;
         let payload_len = u32::from_le_bytes(packet[16..20].try_into().ok()?) as usize;
+        
         if packet.len() < 24 + payload_len {
             return None;
         }
 
         let payload = &packet[24..24 + payload_len];
-        let message = Self::decipher(command, payload)?;
+        let message = Self::decipher(command, payload).ok()?;
         Some((message, 24 + payload_len))
     }
 
     pub fn display(&self) -> String {
         match self {
-            MessageCommand::Version(version, services, timestamp, addr_recv, addr_from, nonce, user_agent, start_height, relay) => {
+            MessageCommand::Version(msg) => {
                 let addr_recv_ip = format!("{}.{}.{}.{}",
-                    addr_recv[20], addr_recv[21], addr_recv[22], addr_recv[23]);
+                    msg.addr_recv[20], msg.addr_recv[21], msg.addr_recv[22], msg.addr_recv[23]);
                 let addr_from_ip = format!("{}.{}.{}.{}",
-                    addr_from[20], addr_from[21], addr_from[22], addr_from[23]);
+                    msg.addr_from[20], msg.addr_from[21], msg.addr_from[22], msg.addr_from[23]);
                 format!(
                     "VERSION\n  Protocol: {}\n  Services: {}\n  Timestamp: {}\n  Recv Addr: {}\n  From Addr: {}\n  Nonce: {}\n  User Agent: {}\n  Start Height: {}\n  Relay: {}",
-                    version, services, timestamp, addr_recv_ip, addr_from_ip, nonce, user_agent, start_height, relay
+                    msg.version, msg.services, msg.timestamp, addr_recv_ip, addr_from_ip, msg.nonce, msg.user_agent, msg.start_height, msg.relay
                 )
             }
             MessageCommand::Verack => "VERACK (Acknowledgement)".to_string(),
             MessageCommand::Ping(nonce) => format!("PING (Nonce: {})", nonce),
             MessageCommand::Pong(nonce) => format!("PONG (Nonce: {})", nonce),
-            MessageCommand::Unknown(command, payload) => format!("UNKNOWN (Command: {}, Payload: {:?})", command, payload),
+            MessageCommand::Unknown { command, payload } => {
+                format!("UNKNOWN (Command: {}, Payload: {:?})", command, payload)
+            }
         }
     }
 
-    fn decipher(command: &str, payload: &[u8]) -> Option<MessageCommand> {
+    fn decipher(command: &str, payload: &[u8]) -> io::Result<MessageCommand> {
+        let mut reader = io::Cursor::new(payload);
         match command {
             "ping" => {
-                if payload.len() < 8 {
-                    return None;
-                }
-                let nonce = u64::from_le_bytes(payload[0..8].try_into().unwrap());
-                Some(MessageCommand::Ping(nonce))
+                let nonce = reader.read_u64_le()?;
+                Ok(MessageCommand::Ping(nonce))
             }
             "pong" => {
-                if payload.len() < 8 {
-                    return None;
-                }
-                let nonce = u64::from_le_bytes(payload[0..8].try_into().unwrap());
-                Some(MessageCommand::Pong(nonce))
+                let nonce = reader.read_u64_le()?;
+                Ok(MessageCommand::Pong(nonce))
             }
             "version" => {
-                if payload.len() < 86 {
-                    return None;
-                }
-                let version = i32::from_le_bytes(payload[0..4].try_into().unwrap());
-                let services = u64::from_le_bytes(payload[4..12].try_into().unwrap());
-                let timestamp = i64::from_le_bytes(payload[12..20].try_into().unwrap());
-                let addr_recv = payload[20..46].try_into().unwrap();
-                let addr_from = payload[46..72].try_into().unwrap();
-                let nonce = u64::from_le_bytes(payload[72..80].try_into().unwrap());
-                
-                let user_agent_len = payload[80] as usize;
-                if payload.len() < 81 + user_agent_len + 5 {
-                    return None;
-                }
-                let user_agent = String::from_utf8_lossy(&payload[81..81 + user_agent_len]).to_string();
-                
-                let start_height = i32::from_le_bytes(payload[81 + user_agent_len..85 + user_agent_len].try_into().unwrap());
-                let relay = payload[85 + user_agent_len];
-                
-                Some(MessageCommand::Version(version, services, timestamp, addr_recv, addr_from, nonce, user_agent, start_height, relay))
+                let version_msg = VersionMessage::read(&mut reader)?;
+                Ok(MessageCommand::Version(version_msg))
             }
-            "verack" => Some(MessageCommand::Verack),
-            _ => Some(MessageCommand::Unknown(command.to_string(), payload.to_vec())),
+            "verack" => Ok(MessageCommand::Verack),
+            _ => Ok(MessageCommand::Unknown {
+                command: command.to_string(),
+                payload: payload.to_vec(),
+            }),
         }
     }
 
@@ -156,7 +256,7 @@ impl MessageCommand {
         match message {
             MessageCommand::Ping(nonce) => Some(MessageCommand::Pong(*nonce)),
             MessageCommand::Verack => None, 
-            MessageCommand::Version(_, _, _, _, _, _, _, _, _) => Some(MessageCommand::Verack),
+            MessageCommand::Version(_) => Some(MessageCommand::Verack),
             _ => None,
         }
     }
