@@ -22,33 +22,6 @@ macro_rules! error {
     ($($arg:tt)*) => { crate::tui::add_log(format!("ERROR: {}", format_args!($($arg)*))) };
 }
 
-struct SyncState {
-    best_block_hash: [u8; 32],
-    best_block_height: u32,
-}
-
-impl SyncState {
-    fn load() -> Option<Self> {
-        let data = std::fs::read("sync_state.dat").ok()?;
-        if data.len() != 36 { return None; }
-        let mut hash = [0u8; 32];
-        hash.copy_from_slice(&data[0..32]);
-        let mut height_bytes = [0u8; 4];
-        height_bytes.copy_from_slice(&data[32..36]);
-        Some(SyncState {
-            best_block_hash: hash,
-            best_block_height: u32::from_le_bytes(height_bytes),
-        })
-    }
-
-    fn save(&self) {
-        let mut data = [0u8; 36];
-        data[0..32].copy_from_slice(&self.best_block_hash);
-        data[32..36].copy_from_slice(&self.best_block_height.to_le_bytes());
-        let _ = std::fs::write("sync_state.dat", data);
-    }
-}
-
 struct SyncNodeGuard {
     has_sync_node: Arc<AtomicBool>,
     pub is_sync_node: bool,
@@ -81,11 +54,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let network = args.network;
     let pool_size = 3;
     
-    if let Some(state) = SyncState::load() {
-        let mut chain = protocol::CHAIN_STATE.lock().unwrap();
-        chain.best_block_hash = state.best_block_hash;
-        chain.best_block_height = state.best_block_height;
-        info!("💾 Checkpoint chargé : Reprise au bloc {}", state.best_block_height);
+    match protocol::load_headers() {
+        Ok(count) if count > 0 => {
+            let chain = protocol::CHAIN_STATE.lock().unwrap();
+            info!("💾 {} en-têtes chargés depuis le disque. Reprise au bloc {}", count, chain.best_block_height);
+        }
+        Ok(_) => info!("💾 Aucun en-tête trouvé, on part de zéro !"),
+        Err(e) => error!("❌ Erreur lors du chargement des en-têtes : {}", e),
     }
 
     info!("Démarrage du mini-nœud Bitcoin sur le réseau {:?} avec un pool de {} pairs...", network, pool_size);
@@ -176,10 +151,7 @@ async fn handle_connection(stream: &mut TcpStream, network: Network, peer_idx: u
         
         pending.extend_from_slice(&buffer[..n]);
 
-        loop {
-            let Some((message, consumed)) = MessageCommand::from_packet(&pending, network) else {
-                break;
-            };
+        while let Some((message, consumed)) = MessageCommand::from_packet(&pending, network) {
             pending.drain(0..consumed);
 
             info!("📥 {}", message);
@@ -202,17 +174,7 @@ async fn handle_connection(stream: &mut TcpStream, network: Network, peer_idx: u
                 let added = tokio::task::spawn_blocking(move || protocol::save_new_headers(&headers))
                     .await??;
 
-                let (height, best_hash) = {
-                    let chain = protocol::CHAIN_STATE.lock().unwrap();
-                    (chain.best_block_height, chain.best_block_hash)
-                };
 
-                if added > 0 {
-                    SyncState {
-                        best_block_hash: best_hash,
-                        best_block_height: height,
-                    }.save();
-                }
 
                 if guard.is_sync_node && added > 0 && headers_len == 2000 {
                     sleep(Duration::from_millis(50)).await;

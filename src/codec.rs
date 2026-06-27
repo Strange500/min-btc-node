@@ -1,6 +1,5 @@
 use std::io::{self, Read, Write};
 
-#[allow(dead_code)]
 pub fn read_varint(reader: &mut impl Read) -> io::Result<u64> {
     let mut first_byte = [0u8; 1];
     reader.read_exact(&mut first_byte)?;
@@ -24,7 +23,6 @@ pub fn read_varint(reader: &mut impl Read) -> io::Result<u64> {
     }
 }
 
-#[allow(dead_code)]
 pub fn write_varint(writer: &mut impl Write, value: u64) -> io::Result<()> {
     if value < 0xFD {
         writer.write_all(&[value as u8])

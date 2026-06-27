@@ -151,7 +151,38 @@ impl BlockHeader {
         })
     }
 
-    pub fn get_hash(&self) -> [u8; 32] {
+    pub fn read_from_disk(reader: &mut impl Read) -> io::Result<Self> {
+        let mut buf4 = [0u8; 4];
+
+        reader.read_exact(&mut buf4)?;
+        let version = i32::from_le_bytes(buf4);
+        
+        let mut prev_block = [0u8; 32];
+        reader.read_exact(&mut prev_block)?;
+        
+        let mut merkle_root = [0u8; 32];
+        reader.read_exact(&mut merkle_root)?;
+        
+        reader.read_exact(&mut buf4)?;
+        let timestamp = u32::from_le_bytes(buf4);
+        
+        reader.read_exact(&mut buf4)?;
+        let bits = u32::from_le_bytes(buf4);
+        
+        reader.read_exact(&mut buf4)?;
+        let nonce = u32::from_le_bytes(buf4);
+        
+        Ok(BlockHeader {
+            version,
+            prev_block,
+            merkle_root,
+            timestamp,
+            bits,
+            nonce,
+        })
+    }
+
+    pub fn as_bytes(&self) -> [u8; 80] {
         let mut raw_header = [0u8; 80];
         raw_header[0..4].copy_from_slice(&self.version.to_le_bytes());
         raw_header[4..36].copy_from_slice(&self.prev_block);
@@ -159,8 +190,15 @@ impl BlockHeader {
         raw_header[68..72].copy_from_slice(&self.timestamp.to_le_bytes());
         raw_header[72..76].copy_from_slice(&self.bits.to_le_bytes());
         raw_header[76..80].copy_from_slice(&self.nonce.to_le_bytes());
-        
-        Sha256::digest(Sha256::digest(raw_header)).into()
+        raw_header
+    }
+
+    pub fn write_to_disk(&self, writer: &mut impl Write) -> io::Result<()> {
+        writer.write_all(&self.as_bytes())
+    }
+
+    pub fn get_hash(&self) -> [u8; 32] {
+        Sha256::digest(Sha256::digest(self.as_bytes())).into()
     }
 
     pub fn get_target_bytes(&self) -> [u8; 32] {
@@ -168,7 +206,7 @@ impl BlockHeader {
         let exponent = (self.bits >> 24) as usize;
         let mantissa = self.bits & 0x00ff_ffff;
         
-        if exponent >= 3 && exponent <= 32 {
+        if (3..=32).contains(&exponent) {
             target[exponent - 1] = (mantissa >> 16) as u8;
             target[exponent - 2] = (mantissa >> 8) as u8;
             target[exponent - 3] = mantissa as u8;

@@ -99,18 +99,52 @@ fn verify_block_header(header: &BlockHeader, prev_header: Option<&BlockHeader>) 
     }
 
     // If there's a previous header, check the linkage
-    if let Some(prev) = prev_header {
-        if header.prev_block != prev.get_hash() {
+    if let Some(prev) = prev_header
+        && header.prev_block != prev.get_hash() {
             return false;
         }
-    }
 
     true
+}
+
+pub fn load_headers() -> io::Result<usize> {
+    let file = match std::fs::File::open("headers.dat") {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e),
+    };
+    let mut reader = io::BufReader::new(file);
+    
+    let mut state = CHAIN_STATE.lock().unwrap();
+    let mut loaded = 0;
+    
+    loop {
+        match BlockHeader::read_from_disk(&mut reader) {
+            Ok(header) => {
+                let hash = header.get_hash();
+                state.header_cache.insert(hash, header);
+                state.best_block_hash = hash;
+                loaded += 1;
+            }
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(e),
+        }
+    }
+    
+    state.best_block_height = loaded;
+    Ok(loaded as usize)
 }
 
 pub fn save_new_headers(headers: &[BlockHeader]) -> io::Result<usize> {
     let mut state = CHAIN_STATE.lock().unwrap();
     let mut added = 0;
+    
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("headers.dat")?;
+    let mut writer = io::BufWriter::new(file);
+
     // verify and save the new headers to the chain state
     for header in headers {
         let hash = header.get_hash();
@@ -123,11 +157,17 @@ pub fn save_new_headers(headers: &[BlockHeader]) -> io::Result<usize> {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid block header"));
         }
         
+        header.write_to_disk(&mut writer)?;
+        
         state.header_cache.insert(hash, header.clone());
         state.best_block_hash = hash;
         state.best_block_height += 1;
         added += 1;
     }
+    
+    use std::io::Write;
+    writer.flush()?;
+    
     Ok(added)
 }
 

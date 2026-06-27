@@ -1,7 +1,7 @@
 use ratatui::{
     backend::CrosstermBackend,
     crossterm::{
-        event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+        event::{self, Event, KeyCode},
         execute,
         terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     },
@@ -44,7 +44,7 @@ pub fn update_peer(idx: usize, address: String, status: String) {
 pub async fn run_tui() -> Result<(), io::Error> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -108,17 +108,15 @@ pub async fn run_tui() -> Result<(), io::Error> {
             f.render_widget(logs_list, chunks[3]);
         })?;
 
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if key.code == KeyCode::Char('q') {
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+                && key.code == KeyCode::Char('q') {
                     break;
                 }
-            }
-        }
     }
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     Ok(())
