@@ -370,3 +370,30 @@ impl InvMessage {
         Ok(InvMessage { inventory })
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct GetDataMessage {
+    pub inventory: Vec<InventoryVector>,
+}
+
+
+impl GetDataMessage {
+    pub fn write(&self, writer: &mut impl Write) -> io::Result<()> {
+        write_varint(writer, self.inventory.len() as u64)?;
+        for inv in &self.inventory {
+            writer.write_all(&(match inv.inv_type {
+                ObjectType::Error => 0u32,
+                ObjectType::MsgTx => 1u32,
+                ObjectType::MsgBlock => 2u32,
+                ObjectType::MsgFilteredBlock => 3u32,
+                ObjectType::MsgCompactBlock => 4u32,
+                ObjectType::MsgWitnessTx => 0x40000001u32,
+                ObjectType::MsgWitnessBlock => 0x40000002u32,
+                ObjectType::MsgFilteredWitnessBlock => 0x40000003u32,
+                ObjectType::Unknown(n) => n,
+            }).to_le_bytes())?;
+            writer.write_all(&inv.hash)?;
+        }
+        Ok(())
+    }
+}

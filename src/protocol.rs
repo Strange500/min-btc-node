@@ -2,7 +2,7 @@ use std::io::{self, Read};
 use std::time::{SystemTime, UNIX_EPOCH};
 use sha2::{Sha256, Digest};
 
-use crate::messages::{BlockHeader, GetHeadersMessage, HeadersMessage, InvMessage, VersionMessage};
+use crate::messages::{BlockHeader, GetDataMessage, GetHeadersMessage, HeadersMessage, InvMessage, VersionMessage};
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
@@ -181,6 +181,7 @@ pub enum MessageCommand {
     Inv(InvMessage),
     GetHeaders(GetHeadersMessage),
     Header(HeadersMessage),
+    GetData(GetDataMessage),
     Unknown { command: String, payload: Vec<u8> },
 }
 
@@ -279,7 +280,11 @@ impl MessageCommand {
                 let _ = msg.write(&mut payload);
                 forge_packet("getheaders", &payload, net)
             }
-            _ => unreachable!("Only version, verack, pong, and getheaders are encoded"),
+            MessageCommand::GetData(msg) => {
+                let _ = msg.write(&mut payload);
+                forge_packet("getdata", &payload, net)
+            }
+            _ => unreachable!("Only version, verack, pong, getheaders, and getdata are encoded"),
         }
     }
 
@@ -355,6 +360,30 @@ impl std::fmt::Display for MessageCommand {
                     Ok(())
                 }
             }
+            MessageCommand::GetData(msg) => {
+                let count = msg.inventory.len();
+                if count == 0 {
+                    write!(f, "GETDATA\n  Count: 0\n  Inventory: []")
+                } else {
+                    writeln!(f, "GETDATA\n  Count: {}", count)?;
+                    for (i, inv) in msg.inventory.iter().take(5).enumerate() {
+                        let mut hash_hex = String::with_capacity(64);
+                        for byte in inv.hash.iter().rev() {
+                            use std::fmt::Write;
+                            write!(&mut hash_hex, "{:02x}", byte).unwrap();
+                        }
+                        if i == 4 || i == count - 1 {
+                            write!(f, "  {}. {:?} {}", i + 1, inv.inv_type, hash_hex)?;
+                        } else {
+                            writeln!(f, "  {}. {:?} {}", i + 1, inv.inv_type, hash_hex)?;
+                        }
+                    }
+                    if count > 5 {
+                        write!(f, "\n  ... and {} more inventory vectors omitted", count - 5)?;
+                    }
+                    Ok(())
+                }
+            }
             MessageCommand::Header(msg) => {
                 let count = msg.headers.len();
                 if count == 0 {
@@ -407,7 +436,17 @@ impl MessageCommand {
             MessageCommand::Verack => None, 
             MessageCommand::Version(_) => Some(MessageCommand::Verack),
             MessageCommand::GetHeaders(_) => Some(MessageCommand::Verack),
-            MessageCommand::Inv(_) => Some(MessageCommand::Verack),
+            MessageCommand::Inv(data) => {
+                if !data.inventory.is_empty() {
+                    let getdata_msg = GetDataMessage {
+                        inventory: data.inventory.clone(),
+                    };
+                    Some(MessageCommand::GetData(getdata_msg))
+                } else {
+                    None
+                }
+            },
+            MessageCommand::GetData(_) => None,
             _ => None,
         }
     }
