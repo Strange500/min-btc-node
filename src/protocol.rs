@@ -184,7 +184,40 @@ pub enum MessageCommand {
     Unknown { command: String, payload: Vec<u8> },
 }
 
+pub enum PeerAction {
+    Reply(MessageCommand),
+    SaveHeaders(Vec<BlockHeader>),
+    UpdateTargetHeight(u32),
+    TryBecomeSyncNode,
+}
+
 impl MessageCommand {
+    pub fn process(self) -> Vec<PeerAction> {
+        let mut actions = Vec::new();
+
+        if let Some(reply) = Self::respond_to(&self) {
+            actions.push(PeerAction::Reply(reply));
+        }
+
+        match self {
+            MessageCommand::Version(v) => {
+                actions.push(PeerAction::UpdateTargetHeight(v.start_height as u32));
+            }
+            MessageCommand::Header(mut msg) => {
+                let headers = std::mem::take(&mut msg.headers);
+                if !headers.is_empty() {
+                    actions.push(PeerAction::SaveHeaders(headers));
+                }
+            }
+            MessageCommand::Verack => {
+                actions.push(PeerAction::TryBecomeSyncNode);
+            }
+            _ => {}
+        }
+        
+        actions
+    }
+
     pub fn version(net: Network) -> MessageCommand {
         let mut addr_recv = [0u8; 26];
         addr_recv[8..24].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 127, 0, 0, 1]);

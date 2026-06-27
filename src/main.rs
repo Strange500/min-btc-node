@@ -156,49 +156,43 @@ async fn handle_connection(stream: &mut TcpStream, network: Network, peer_idx: u
 
             info!("📥 {}", message);
 
-            if let MessageCommand::Version(ref v) = message {
-                let new_len = v.start_height as u32;
-                let mut chain = protocol::CHAIN_STATE.lock().unwrap();
-                if new_len > chain.target_height {
-                    chain.target_height = new_len;
-                }
-            }
+            let actions = message.process();
+            for action in actions {
+                match action {
+                    protocol::PeerAction::Reply(reply) => {
+                        info!("📤 {}", reply);
+                        let packet = reply.encode(network);
+                        stream.write_all(&packet).await?;
+                    }
+                    protocol::PeerAction::UpdateTargetHeight(height) => {
+                        let mut chain = protocol::CHAIN_STATE.lock().unwrap();
+                        if height > chain.target_height {
+                            chain.target_height = height;
+                        }
+                    }
+                    protocol::PeerAction::SaveHeaders(headers) => {
+                        let headers_len = headers.len();
+                        let added = tokio::task::spawn_blocking(move || protocol::save_new_headers(&headers))
+                            .await??;
 
-            if let MessageCommand::Header(mut msg) = message {
-                let headers = std::mem::take(&mut msg.headers);
-                if headers.is_empty() {
-                    continue;
-                }
-                
-                let headers_len = headers.len();
-                let added = tokio::task::spawn_blocking(move || protocol::save_new_headers(&headers))
-                    .await??;
-
-
-
-                if guard.is_sync_node && added > 0 && headers_len == 2000 {
-                    sleep(Duration::from_millis(50)).await;
-                    let getheaders = MessageCommand::getheaders(network);
-                    stream.write_all(&getheaders.encode(network)).await?;
-                }
-            } else {
-                if let Some(response_message) = MessageCommand::respond_to(&message) {
-                    info!("📤 {}", response_message);
-                    let response_packet = response_message.encode(network);
-                    stream.write_all(&response_packet).await?;
-                }
-
-                if matches!(message, MessageCommand::Verack) {
-                    if !guard.has_sync_node.swap(true, Ordering::SeqCst) {
-                        guard.is_sync_node = true;
-                        tui::update_peer(peer_idx, target_peer.to_string(), "Sync Node 👑".to_string());
-                        info!("👑 {} devient le Sync Node. Envoi de 'getheaders'...", target_peer);
-                        
-                        let getheaders = MessageCommand::getheaders(network);
-                        stream.write_all(&getheaders.encode(network)).await?;
-                    } else {
-                        tui::update_peer(peer_idx, target_peer.to_string(), "Standby 🎧".to_string());
-                        info!("🎧 {} est en Standby (Listener).", target_peer);
+                        if guard.is_sync_node && added > 0 && headers_len == 2000 {
+                            sleep(Duration::from_millis(50)).await;
+                            let getheaders = MessageCommand::getheaders(network);
+                            stream.write_all(&getheaders.encode(network)).await?;
+                        }
+                    }
+                    protocol::PeerAction::TryBecomeSyncNode => {
+                        if !guard.has_sync_node.swap(true, Ordering::SeqCst) {
+                            guard.is_sync_node = true;
+                            tui::update_peer(peer_idx, target_peer.to_string(), "Sync Node 👑".to_string());
+                            info!("👑 {} devient le Sync Node. Envoi de 'getheaders'...", target_peer);
+                            
+                            let getheaders = MessageCommand::getheaders(network);
+                            stream.write_all(&getheaders.encode(network)).await?;
+                        } else if !guard.is_sync_node {
+                            tui::update_peer(peer_idx, target_peer.to_string(), "Standby 🎧".to_string());
+                            info!("🎧 {} est en Standby (Listener).", target_peer);
+                        }
                     }
                 }
             }
