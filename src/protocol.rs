@@ -1,9 +1,8 @@
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::time::{SystemTime, UNIX_EPOCH};
 use sha2::{Sha256, Digest};
 
-use crate::messages::{BlockHeader, GetHeadersMessage, HeadersMessage, VersionMessage};
-use crate::codec::{read_varint, write_varint};
+use crate::messages::{BlockHeader, GetHeadersMessage, HeadersMessage, InvMessage, VersionMessage};
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
@@ -139,6 +138,7 @@ pub enum MessageCommand {
     Verack,
     Ping(u64),
     Pong(u64),
+    Inv(InvMessage),
     GetHeaders(GetHeadersMessage),
     Header(HeadersMessage),
     Unknown { command: String, payload: Vec<u8> },
@@ -233,39 +233,68 @@ impl MessageCommand {
         Some((message, 24 + payload_len))
     }
 
-    pub fn display(&self) -> String {
+}
+
+impl std::fmt::Display for MessageCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             MessageCommand::Version(msg) => {
                 let addr_recv_ip = format!("{}.{}.{}.{}",
                     msg.addr_recv[20], msg.addr_recv[21], msg.addr_recv[22], msg.addr_recv[23]);
                 let addr_from_ip = format!("{}.{}.{}.{}",
                     msg.addr_from[20], msg.addr_from[21], msg.addr_from[22], msg.addr_from[23]);
-                format!(
+                write!(f,
                     "VERSION\n  Protocol: {}\n  Services: {}\n  Timestamp: {}\n  Recv Addr: {}\n  From Addr: {}\n  Nonce: {}\n  User Agent: {}\n  Start Height: {}\n  Relay: {}",
                     msg.version, msg.services, msg.timestamp, addr_recv_ip, addr_from_ip, msg.nonce, msg.user_agent, msg.start_height, msg.relay
                 )
             }
-            MessageCommand::Verack => "VERACK (Acknowledgement)".to_string(),
-            MessageCommand::Ping(nonce) => format!("PING (Nonce: {})", nonce),
-            MessageCommand::Pong(nonce) => format!("PONG (Nonce: {})", nonce),
+            MessageCommand::Verack => write!(f, "VERACK (Acknowledgement)"),
+            MessageCommand::Ping(nonce) => write!(f, "PING (Nonce: {})", nonce),
+            MessageCommand::Pong(nonce) => write!(f, "PONG (Nonce: {})", nonce),
             MessageCommand::Unknown { command, payload } => {
-                format!("UNKNOWN (Command: {}, Payload: {:?})", command, payload)
+                write!(f, "UNKNOWN (Command: {}, Payload: {:?})", command, payload)
             }
             MessageCommand::GetHeaders(msg) => {
-                format!("GETHEADERS\n  Version: {}\n  Hash Count: {}\n  Stop Hash: {:?}", 
+                write!(f, "GETHEADERS\n  Version: {}\n  Hash Count: {}\n  Stop Hash: {:?}", 
                         msg.version, msg.hash_count, msg.stop_hash)
+            }
+            MessageCommand::Inv(msg) => {
+                let count = msg.inventory.len();
+                if count == 0 {
+                    write!(f, "INV\n  Count: 0\n  Inventory: []")
+                } else {
+                    writeln!(f, "INV\n  Count: {}", count)?;
+                    for (i, inv) in msg.inventory.iter().take(5).enumerate() {
+                        let mut hash_hex = String::with_capacity(64);
+                        for byte in inv.hash.iter().rev() {
+                            use std::fmt::Write;
+                            write!(&mut hash_hex, "{:02x}", byte).unwrap();
+                        }
+                        if i == 4 || i == count - 1 {
+                            write!(f, "  {}. {:?} {}", i + 1, inv.inv_type, hash_hex)?;
+                        } else {
+                            writeln!(f, "  {}. {:?} {}", i + 1, inv.inv_type, hash_hex)?;
+                        }
+                    }
+                    if count > 5 {
+                        write!(f, "\n  ... and {} more inventory vectors omitted", count - 5)?;
+                    }
+                    Ok(())
+                }
             }
             MessageCommand::Header(msg) => {
                 let count = msg.headers.len();
                 if count == 0 {
-                    "HEADERS\n  Count: 0\n  Headers: []".to_string()
+                    write!(f, "HEADERS\n  Count: 0\n  Headers: []")
                 } else {
-                    format!("HEADERS\n  Count: {}\n  [... {} headers omitted for brevity ...]", count, count)
+                    write!(f, "HEADERS\n  Count: {}\n  [... {} headers omitted for brevity ...]", count, count)
                 }
             }
         }
     }
+}
 
+impl MessageCommand {
     fn decipher(command: &str, payload: &[u8]) -> io::Result<MessageCommand> {
         let mut reader = io::Cursor::new(payload);
         match command {
@@ -282,6 +311,10 @@ impl MessageCommand {
             "version" => {
                 let version_msg = VersionMessage::read(&mut reader)?;
                 Ok(MessageCommand::Version(version_msg))
+            }
+            "inv" => {
+                let inv_msg = InvMessage::read(&mut reader)?;
+                Ok(MessageCommand::Inv(inv_msg))
             }
             "headers" => {
                 let headers_msg = HeadersMessage::read(&mut reader)?;
@@ -301,6 +334,7 @@ impl MessageCommand {
             MessageCommand::Verack => None, 
             MessageCommand::Version(_) => Some(MessageCommand::Verack),
             MessageCommand::GetHeaders(_) => Some(MessageCommand::Verack),
+            MessageCommand::Inv(_) => Some(MessageCommand::Verack),
             _ => None,
         }
     }

@@ -191,12 +191,6 @@ impl BlockHeader {
             }
         }
         
-        if is_valid {
-            tracing::debug!("✅ PoW valid");
-        } else {
-            tracing::warn!("❌ PoW INVALID!");
-        }
-        
         is_valid
     }
 }
@@ -241,5 +235,100 @@ mod tests {
             nonce: 0,
         };
         assert!(!header.check_proof_of_work(), "PoW should be invalid against a 0 target");
+    }
+
+    #[test]
+    fn test_inv_message_deserialization() {
+        let mut buffer = Vec::new();
+        crate::codec::write_varint(&mut buffer, 2).unwrap();
+        buffer.extend_from_slice(&1u32.to_le_bytes());
+        buffer.extend_from_slice(&[1u8; 32]);
+        buffer.extend_from_slice(&999u32.to_le_bytes());
+        buffer.extend_from_slice(&[2u8; 32]);
+
+        let mut cursor = std::io::Cursor::new(buffer);
+        let decoded = InvMessage::read(&mut cursor).unwrap();
+
+        assert_eq!(decoded.inventory.len(), 2);
+        assert_eq!(decoded.inventory[0].inv_type, ObjectType::MsgTx);
+        assert_eq!(decoded.inventory[0].hash, [1u8; 32]);
+        assert_eq!(decoded.inventory[1].inv_type, ObjectType::Unknown(999));
+        assert_eq!(decoded.inventory[1].hash, [2u8; 32]);
+    }
+
+    #[test]
+    fn test_inv_message_exceeds_limit_read() {
+        // Construct a raw var_int of 50,001 (which is 0xfd, 0x51, 0xc3 in little-endian format)
+        // Actually, let's just use the `write_varint` helper directly if it's available,
+        // or just manually craft a small payload.
+        let mut buffer = Vec::new();
+        crate::codec::write_varint(&mut buffer, 50_001).unwrap();
+        
+        let mut cursor = std::io::Cursor::new(buffer);
+        let result = InvMessage::read(&mut cursor);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+    }
+}
+#[derive(Debug, Clone)]
+pub struct InvMessage {
+    pub inventory: Vec<InventoryVector>,
+}
+
+
+#[derive(Debug, Clone)]
+pub struct InventoryVector {
+    pub inv_type: ObjectType,
+    pub hash: [u8; 32],
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ObjectType {
+    Error,
+    MsgTx,
+    MsgBlock,
+    MsgFilteredBlock,
+    MsgCompactBlock,
+    MsgWitnessTx,
+    MsgWitnessBlock,
+    MsgFilteredWitnessBlock,
+    Unknown(u32),
+}
+
+
+impl ObjectType {
+    pub fn from_u32(value: u32) -> Self {
+        match value {
+            0 => ObjectType::Error,
+            1 => ObjectType::MsgTx,
+            2 => ObjectType::MsgBlock,
+            3 => ObjectType::MsgFilteredBlock,
+            4 => ObjectType::MsgCompactBlock,
+            0x40000001 => ObjectType::MsgWitnessTx,
+            0x40000002 => ObjectType::MsgWitnessBlock,
+            0x40000003 => ObjectType::MsgFilteredWitnessBlock,
+            n => ObjectType::Unknown(n),
+        }
+    }
+}
+
+impl InvMessage {
+    pub fn read(reader: &mut impl Read) -> io::Result<Self> {
+        let count = read_varint(reader)?;
+        if count > 50_000 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Too many inventory entries"));
+        }
+        let mut inventory = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            let mut buf4 = [0u8; 4];
+            reader.read_exact(&mut buf4)?;
+            let inv_type_u32 = u32::from_le_bytes(buf4);
+            let inv_type = ObjectType::from_u32(inv_type_u32);
+            
+            let mut hash = [0u8; 32];
+            reader.read_exact(&mut hash)?;
+            
+            inventory.push(InventoryVector { inv_type, hash });
+        }
+        Ok(InvMessage { inventory })
     }
 }

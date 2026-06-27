@@ -7,14 +7,21 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
-use tracing::{debug, error, info, warn};
 use protocol::{MessageCommand, Network};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+macro_rules! info {
+    ($($arg:tt)*) => { crate::tui::add_log(format!("INFO: {}", format_args!($($arg)*))) };
+}
+macro_rules! warn {
+    ($($arg:tt)*) => { crate::tui::add_log(format!("WARN: {}", format_args!($($arg)*))) };
+}
+macro_rules! error {
+    ($($arg:tt)*) => { crate::tui::add_log(format!("ERROR: {}", format_args!($($arg)*))) };
+}
+
 struct SyncState {
     best_block_hash: [u8; 32],
     best_block_height: u32,
@@ -22,14 +29,23 @@ struct SyncState {
 
 impl SyncState {
     fn load() -> Option<Self> {
-        let data = std::fs::read_to_string("sync_state.json").ok()?;
-        serde_json::from_str(&data).ok()
+        let data = std::fs::read("sync_state.dat").ok()?;
+        if data.len() != 36 { return None; }
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&data[0..32]);
+        let mut height_bytes = [0u8; 4];
+        height_bytes.copy_from_slice(&data[32..36]);
+        Some(SyncState {
+            best_block_hash: hash,
+            best_block_height: u32::from_le_bytes(height_bytes),
+        })
     }
 
     fn save(&self) {
-        if let Ok(data) = serde_json::to_string(self) {
-            let _ = std::fs::write("sync_state.json", data);
-        }
+        let mut data = [0u8; 36];
+        data[0..32].copy_from_slice(&self.best_block_hash);
+        data[32..36].copy_from_slice(&self.best_block_height.to_le_bytes());
+        let _ = std::fs::write("sync_state.dat", data);
     }
 }
 
@@ -48,21 +64,6 @@ impl Drop for SyncNodeGuard {
     }
 }
 
-struct TuiWriter;
-impl std::io::Write for TuiWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let s = String::from_utf8_lossy(buf).to_string();
-        tui::add_log(s.trim_end().to_string());
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
-}
-
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for TuiWriter {
-    type Writer = TuiWriter;
-    fn make_writer(&'a self) -> Self::Writer { TuiWriter }
-}
-
 use clap::Parser;
 
 #[derive(Parser, Debug)]
@@ -76,16 +77,6 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::builder()
-                .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
-                .from_env_lossy(),
-        )
-        .with_writer(TuiWriter)
-        .without_time()
-        .init();
 
     let network = args.network;
     let pool_size = 3;
@@ -191,6 +182,8 @@ async fn handle_connection(stream: &mut TcpStream, network: Network, peer_idx: u
             };
             pending.drain(0..consumed);
 
+            info!("📥 {}", message);
+
             if let MessageCommand::Version(ref v) = message {
                 let new_len = v.start_height as u32;
                 let mut chain = protocol::CHAIN_STATE.lock().unwrap();
@@ -228,6 +221,7 @@ async fn handle_connection(stream: &mut TcpStream, network: Network, peer_idx: u
                 }
             } else {
                 if let Some(response_message) = MessageCommand::respond_to(&message) {
+                    info!("📤 {}", response_message);
                     let response_packet = response_message.encode(network);
                     stream.write_all(&response_packet).await?;
                 }
