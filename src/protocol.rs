@@ -307,6 +307,13 @@ impl MessageCommand {
         }
 
         let payload = &packet[24..24 + payload_len];
+        
+        let checksum = &packet[20..24];
+        let computed_checksum = &double_sha256(payload)[..4];
+        if checksum != computed_checksum {
+            return None; // Invalid checksum
+        }
+
         let message = Self::decipher(command, payload).ok()?;
         Some((message, 24 + payload_len))
     }
@@ -530,6 +537,18 @@ mod tests {
         let incomplete = &packet[0..packet.len() - 10];
         let decoded = MessageCommand::from_packet(incomplete, net);
         assert!(decoded.is_none(), "Un paquet incomplet ne doit pas être parsé");
+    }
+
+    #[test]
+    fn test_from_packet_corrupted_checksum() {
+        let net = Network::Regtest;
+        let mut packet = MessageCommand::version(net).encode(net);
+        
+        // Corrupt the checksum (bytes 20..24)
+        packet[20] ^= 0xFF;
+        
+        let decoded = MessageCommand::from_packet(&packet, net);
+        assert!(decoded.is_none(), "Un paquet avec un checksum corrompu doit être rejeté");
     }
 
     #[test]

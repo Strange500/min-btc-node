@@ -1,3 +1,4 @@
 /target
 
-*.dat
+headers.dat
+sync_state.dat

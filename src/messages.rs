@@ -307,6 +307,32 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
     }
+
+    #[test]
+    fn test_getdata_message_serialization() {
+        let inv = InventoryVector {
+            inv_type: ObjectType::MsgTx,
+            hash: [0x42; 32],
+        };
+        let getdata = GetDataMessage {
+            inventory: vec![inv.clone(), inv.clone()],
+        };
+        
+        let mut buffer = Vec::new();
+        getdata.write(&mut buffer).unwrap();
+        
+        // 1 byte for varint (2 elements) + 2 * (4 bytes type + 32 bytes hash)
+        assert_eq!(buffer.len(), 1 + 2 * 36);
+        assert_eq!(buffer[0], 2); // count = 2
+        
+        // First entry
+        assert_eq!(&buffer[1..5], &1u32.to_le_bytes()); // MsgTx
+        assert_eq!(&buffer[5..37], &[0x42; 32]);
+        
+        // Second entry
+        assert_eq!(&buffer[37..41], &1u32.to_le_bytes()); // MsgTx
+        assert_eq!(&buffer[41..73], &[0x42; 32]);
+    }
 }
 #[derive(Debug, Clone)]
 pub struct InvMessage {
