@@ -194,6 +194,34 @@ pub enum PeerAction {
 }
 
 impl MessageCommand {
+    fn command(&self) -> &'static str {
+        match self {
+            MessageCommand::Version(_) => "version",
+            MessageCommand::Verack => "verack",
+            MessageCommand::Ping(_) => "ping",
+            MessageCommand::Pong(_) => "pong",
+            MessageCommand::GetHeaders(_) => "getheaders",
+            MessageCommand::GetData(_) => "getdata",
+            MessageCommand::Inv(_) => "inv",
+            MessageCommand::Header(_) => "headers",
+            MessageCommand::Tx(_) => "tx",
+            MessageCommand::Unknown(_) => "unknown",
+        }
+    }
+
+    fn encode_payload(&self, writer: &mut impl std::io::Write) -> std::io::Result<()> {
+        match self {
+            MessageCommand::Version(msg) => msg.write(writer),
+            MessageCommand::Verack => Ok(()),
+            MessageCommand::Pong(nonce) | MessageCommand::Ping(nonce) => writer.write_all(&nonce.to_le_bytes()),
+            MessageCommand::GetHeaders(msg) => msg.write(writer),
+            MessageCommand::GetData(msg) => msg.write(writer),
+            _ => Ok(()),
+        }
+    }
+}
+
+impl MessageCommand {
     pub fn process(self) -> Vec<PeerAction> {
         let mut actions = Vec::new();
 
@@ -282,26 +310,8 @@ impl MessageCommand {
 
     pub fn encode(&self, net: Network) -> Vec<u8> {
         let mut payload = Vec::new();
-        match self {
-            MessageCommand::Version(msg) => {
-                let _ = msg.write(&mut payload);
-                forge_packet("version", &payload, net)
-            }
-            MessageCommand::Verack => forge_packet("verack", &[], net),
-            MessageCommand::Pong(nonce) => {
-                payload.extend_from_slice(&nonce.to_le_bytes());
-                forge_packet("pong", &payload, net)
-            }
-            MessageCommand::GetHeaders(msg) => {
-                let _ = msg.write(&mut payload);
-                forge_packet("getheaders", &payload, net)
-            }
-            MessageCommand::GetData(msg) => {
-                let _ = msg.write(&mut payload);
-                forge_packet("getdata", &payload, net)
-            }
-            _ => unreachable!("Only version, verack, pong, getheaders, and getdata are encoded"),
-        }
+        let _ = self.encode_payload(&mut payload);
+        forge_packet(self.command(), &payload, net)
     }
 
     pub fn from_packet(packet: &[u8], net: Network) -> Option<(MessageCommand, usize)> {

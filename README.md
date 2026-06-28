@@ -30,8 +30,8 @@ Voici la checklist de tout ce qui a été accompli et ce qu'il reste à faire.
 ### 4. Ce qu'il reste à faire (Le Live Mempool & Wallet)
 - [x] **Décodage des inventaires** : Parsing des messages `inv` annonçant de nouvelles données.
 - [x] **Message GetData** : Implémentation et tests de la sérialisation de `getdata` pour réclamer le contenu.
-- [ ] **Aspirateur de Transactions** : Répondre automatiquement aux `inv` avec un `getdata` pour obtenir le détail des transactions.
-- [ ] **Décodage des TX** : Parser les messages `tx` pour afficher un radar en direct du mempool dans le TUI (Montants, Adresses, Frais).
+- [x] **Aspirateur de Transactions** : Répondre automatiquement aux `inv` avec un `getdata` pour obtenir le détail des transactions.
+- [x] **Décodage des TX** : Parser les messages `tx` pour afficher un radar en direct du mempool dans le TUI (Montants, Adresses, Frais).
 - [ ] **Filtres de Bloom (`filterload`)** : Demander aux nœuds de ne relayer que les transactions d'une adresse spécifique.
 - [ ] **Preuves SPV (`merkleblock`)** : Vérifier mathématiquement l'inclusion d'une transaction dans un bloc.
 - [ ] **Watch-only Wallet** : Calculer et afficher un solde Bitcoin en temps réel à partir de la chaîne !
