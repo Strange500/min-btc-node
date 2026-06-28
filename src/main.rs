@@ -135,7 +135,6 @@ fn discover_peers(network: Network) -> Vec<SocketAddr> {
 
 async fn handle_connection(stream: &mut TcpStream, network: Network, peer_idx: usize, target_peer: SocketAddr, has_sync_node: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
     let version_message = MessageCommand::Version(crate::messages::VersionMessage::new(network)).encode(network);
-
     stream.write_all(&version_message).await?;
 
     let mut buffer = [0u8; 1024];
@@ -153,67 +152,73 @@ async fn handle_connection(stream: &mut TcpStream, network: Network, peer_idx: u
 
         while let Some((message, consumed)) = MessageCommand::from_packet(&pending, network) {
             pending.drain(0..consumed);
-
             info!("📥 {}", message);
 
             let actions = message.process();
-            for action in actions {
-                match action {
-                    protocol::PeerAction::Reply(reply) => {
-                        info!("📤 {}", reply);
-                        let packet = reply.encode(network);
-                        stream.write_all(&packet).await?;
-                    }
-                    protocol::PeerAction::UpdateTargetHeight(height) => {
-                        let mut chain = protocol::CHAIN_STATE.lock().unwrap();
-                        if height > chain.target_height {
-                            chain.target_height = height;
-                        }
-                    }
-                    protocol::PeerAction::SaveHeaders(headers) => {
-                        let headers_len = headers.len();
-                        let added = tokio::task::spawn_blocking(move || protocol::save_new_headers(&headers))
-                            .await??;
-
-                        if guard.is_sync_node && added > 0 && headers_len == 2000 {
-                            sleep(Duration::from_millis(50)).await;
-                            let locator_hash = {
-                                let state = crate::protocol::CHAIN_STATE.lock().unwrap();
-                                if state.best_block_hash == [0u8; 32] {
-                                    network.genesis_hash()
-                                } else {
-                                    state.best_block_hash
-                                }
-                            };
-                            let getheaders = MessageCommand::GetHeaders(crate::messages::GetHeadersMessage::new(locator_hash));
-                            stream.write_all(&getheaders.encode(network)).await?;
-                        }
-                    }
-                    protocol::PeerAction::TryBecomeSyncNode => {
-                        if !guard.has_sync_node.swap(true, Ordering::SeqCst) {
-                            guard.is_sync_node = true;
-                            tui::update_peer(peer_idx, target_peer.to_string(), "Sync Node 👑".to_string());
-                            info!("👑 {} devient le Sync Node. Envoi de 'getheaders'...", target_peer);
-                            
-                            let locator_hash = {
-                                let state = crate::protocol::CHAIN_STATE.lock().unwrap();
-                                if state.best_block_hash == [0u8; 32] {
-                                    network.genesis_hash()
-                                } else {
-                                    state.best_block_hash
-                                }
-                            };
-                            let getheaders = MessageCommand::GetHeaders(crate::messages::GetHeadersMessage::new(locator_hash));
-                            stream.write_all(&getheaders.encode(network)).await?;
-                        } else if !guard.is_sync_node {
-                            tui::update_peer(peer_idx, target_peer.to_string(), "Standby 🎧".to_string());
-                            info!("🎧 {} est en Standby (Listener).", target_peer);
-                        }
-                    }
-                }
-            }
+            handle_peer_actions(stream, actions, network, peer_idx, target_peer, &mut guard).await?;
         }
     }
 
     Ok(())
+}
+
+async fn handle_peer_actions(
+    stream: &mut TcpStream,
+    actions: Vec<protocol::PeerAction>,
+    network: Network,
+    peer_idx: usize,
+    target_peer: SocketAddr,
+    guard: &mut SyncNodeGuard,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for action in actions {
+        match action {
+            protocol::PeerAction::Reply(reply) => {
+                info!("📤 {}", reply);
+                stream.write_all(&reply.encode(network)).await?;
+            }
+            protocol::PeerAction::UpdateTargetHeight(height) => {
+                let mut chain = protocol::CHAIN_STATE.lock().unwrap();
+                if height > chain.target_height {
+                    chain.target_height = height;
+                }
+            }
+            protocol::PeerAction::SaveHeaders(headers) => {
+                let headers_len = headers.len();
+                let added = tokio::task::spawn_blocking(move || protocol::save_new_headers(&headers)).await??;
+
+                if guard.is_sync_node && added > 0 && headers_len == 2000 {
+                    sleep(Duration::from_millis(50)).await;
+                    request_headers(stream, network).await?;
+                }
+            }
+            protocol::PeerAction::TryBecomeSyncNode => {
+                if !guard.has_sync_node.swap(true, Ordering::SeqCst) {
+                    guard.is_sync_node = true;
+                    tui::update_peer(peer_idx, target_peer.to_string(), "Sync Node 👑".to_string());
+                    info!("👑 {} devient le Sync Node. Envoi de 'getheaders'...", target_peer);
+                    request_headers(stream, network).await?;
+                } else if !guard.is_sync_node {
+                    tui::update_peer(peer_idx, target_peer.to_string(), "Standby 🎧".to_string());
+                    info!("🎧 {} est en Standby (Listener).", target_peer);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn request_headers(stream: &mut TcpStream, network: Network) -> Result<(), Box<dyn std::error::Error>> {
+    let locator_hash = get_locator_hash(network);
+    let getheaders = MessageCommand::GetHeaders(crate::messages::GetHeadersMessage::new(locator_hash));
+    stream.write_all(&getheaders.encode(network)).await?;
+    Ok(())
+}
+
+fn get_locator_hash(network: Network) -> [u8; 32] {
+    let state = crate::protocol::CHAIN_STATE.lock().unwrap();
+    if state.best_block_hash == [0u8; 32] {
+        network.genesis_hash()
+    } else {
+        state.best_block_hash
+    }
 }
