@@ -1,6 +1,5 @@
 use std::io::{self, Read, Write};
 use crate::codec::{read_varint, write_varint};
-use sha2::{Sha256, Digest};
 
 #[derive(Debug, Clone)]
 pub struct VersionMessage {
@@ -198,7 +197,7 @@ impl BlockHeader {
     }
 
     pub fn get_hash(&self) -> [u8; 32] {
-        Sha256::digest(Sha256::digest(self.as_bytes())).into()
+        crate::protocol::double_sha256(&self.as_bytes())
     }
 
     pub fn get_target_bytes(&self) -> [u8; 32] {
@@ -218,18 +217,7 @@ impl BlockHeader {
         let hash_le = self.get_hash();
         let target = self.get_target_bytes();
         
-        // Compare arrays from most significant to least significant byte (little-endian: reverse)
-        let mut is_valid = true;
-        for i in (0..32).rev() {
-            if hash_le[i] < target[i] {
-                break;
-            } else if hash_le[i] > target[i] {
-                is_valid = false;
-                break;
-            }
-        }
-        
-        is_valid
+        hash_le.iter().rev().le(target.iter().rev())
     }
 }
 

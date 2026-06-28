@@ -144,7 +144,6 @@ name = "btc-new"
 version = "0.1.0"
 dependencies = [
  "clap",
- "crossterm",
  "ratatui",
  "sha2",
  "tokio",

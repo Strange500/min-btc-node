@@ -182,7 +182,7 @@ pub enum MessageCommand {
     GetHeaders(GetHeadersMessage),
     Header(HeadersMessage),
     GetData(GetDataMessage),
-    Unknown { command: String, payload: Vec<u8> },
+    Unknown(String),
 }
 
 pub enum PeerAction {
@@ -196,13 +196,24 @@ impl MessageCommand {
     pub fn process(self) -> Vec<PeerAction> {
         let mut actions = Vec::new();
 
-        if let Some(reply) = Self::respond_to(&self) {
-            actions.push(PeerAction::Reply(reply));
-        }
-
         match self {
+            MessageCommand::Ping(nonce) => {
+                actions.push(PeerAction::Reply(MessageCommand::Pong(nonce)));
+            }
             MessageCommand::Version(v) => {
+                actions.push(PeerAction::Reply(MessageCommand::Verack));
                 actions.push(PeerAction::UpdateTargetHeight(v.start_height as u32));
+            }
+            MessageCommand::GetHeaders(_) => {
+                actions.push(PeerAction::Reply(MessageCommand::Verack));
+            }
+            MessageCommand::Inv(mut data) => {
+                let inventory = std::mem::take(&mut data.inventory);
+                if !inventory.is_empty() {
+                    actions.push(PeerAction::Reply(MessageCommand::GetData(crate::messages::GetDataMessage {
+                        inventory,
+                    })));
+                }
             }
             MessageCommand::Header(mut msg) => {
                 let headers = std::mem::take(&mut msg.headers);
@@ -336,8 +347,8 @@ impl std::fmt::Display for MessageCommand {
             MessageCommand::Verack => write!(f, "VERACK (Acknowledgement)"),
             MessageCommand::Ping(nonce) => write!(f, "PING (Nonce: {})", nonce),
             MessageCommand::Pong(nonce) => write!(f, "PONG (Nonce: {})", nonce),
-            MessageCommand::Unknown { command, payload } => {
-                write!(f, "UNKNOWN (Command: {}, Payload: {:?})", command, payload)
+            MessageCommand::Unknown(command) => {
+                write!(f, "UNKNOWN (Command: {})", command)
             }
             MessageCommand::GetHeaders(msg) => {
                 write!(f, "GETHEADERS\n  Version: {}\n  Hash Count: {}\n  Stop Hash: {:?}", 
@@ -430,33 +441,10 @@ impl MessageCommand {
                 Ok(MessageCommand::Header(headers_msg))
             }
             "verack" => Ok(MessageCommand::Verack),
-            _ => Ok(MessageCommand::Unknown {
-                command: command.to_string(),
-                payload: payload.to_vec(),
-            }),
+            _ => Ok(MessageCommand::Unknown(command.to_string())),
         }
     }
 
-    pub fn respond_to(message: &MessageCommand) -> Option<MessageCommand> {
-        match message {
-            MessageCommand::Ping(nonce) => Some(MessageCommand::Pong(*nonce)),
-            MessageCommand::Verack => None, 
-            MessageCommand::Version(_) => Some(MessageCommand::Verack),
-            MessageCommand::GetHeaders(_) => Some(MessageCommand::Verack),
-            MessageCommand::Inv(data) => {
-                if !data.inventory.is_empty() {
-                    let getdata_msg = GetDataMessage {
-                        inventory: data.inventory.clone(),
-                    };
-                    Some(MessageCommand::GetData(getdata_msg))
-                } else {
-                    None
-                }
-            },
-            MessageCommand::GetData(_) => None,
-            _ => None,
-        }
-    }
 }
 
 pub fn double_sha256(data: &[u8]) -> [u8; 32] {
