@@ -2,7 +2,7 @@ use std::io::{self, Read};
 use std::time::{SystemTime, UNIX_EPOCH};
 use sha2::{Sha256, Digest};
 
-use crate::messages::{BlockHeader, GetDataMessage, GetHeadersMessage, HeadersMessage, InvMessage, VersionMessage};
+use crate::messages::{BlockHeader, GetDataMessage, GetHeadersMessage, HeadersMessage, InvMessage, TxMessage, VersionMessage};
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
@@ -179,6 +179,7 @@ pub enum MessageCommand {
     Ping(u64),
     Pong(u64),
     Inv(InvMessage),
+    Tx(TxMessage),
     GetHeaders(GetHeadersMessage),
     Header(HeadersMessage),
     GetData(GetDataMessage),
@@ -223,6 +224,10 @@ impl MessageCommand {
             }
             MessageCommand::Verack => {
                 actions.push(PeerAction::TryBecomeSyncNode);
+            }
+            MessageCommand::Tx(msg) => {
+                let tx_str = format!("{}", MessageCommand::Tx(msg));
+                crate::tui::add_tx(tx_str);
             }
             _ => {}
         }
@@ -361,11 +366,7 @@ impl std::fmt::Display for MessageCommand {
                 } else {
                     writeln!(f, "INV\n  Count: {}", count)?;
                     for (i, inv) in msg.inventory.iter().take(5).enumerate() {
-                        let mut hash_hex = String::with_capacity(64);
-                        for byte in inv.hash.iter().rev() {
-                            use std::fmt::Write;
-                            write!(&mut hash_hex, "{:02x}", byte).unwrap();
-                        }
+                        let hash_hex: String = inv.hash.iter().rev().map(|b| format!("{:02x}", b)).collect();
                         if i == 4 || i == count - 1 {
                             write!(f, "  {}. {:?} {}", i + 1, inv.inv_type, hash_hex)?;
                         } else {
@@ -378,6 +379,37 @@ impl std::fmt::Display for MessageCommand {
                     Ok(())
                 }
             }
+            MessageCommand::Tx(msg) => {
+                let tx_in_count = msg.tx_in.len();
+                let tx_out_count = msg.tx_out.len();
+                if tx_in_count == 0 && tx_out_count == 0 {
+                    write!(f, "TX\n  TxIn Count: 0\n  TxOut Count: 0\n  TxIn: []\n  TxOut: []")
+                } else {
+                    writeln!(f, "TX\n  TxIn Count: {}\n  TxOut Count: {}", tx_in_count, tx_out_count)?;
+                    writeln!(f, "  TxIn:")?;
+                    for (i, tx_in) in msg.tx_in.iter().take(3).enumerate() {
+                        let hash_hex: String = tx_in.prev_txid.hash.iter().rev().map(|b| format!("{:02x}", b)).collect();
+                        writeln!(f, "    {}. PrevHash: {} Index: {}", i + 1, hash_hex, tx_in.prev_txid.index)?;
+                    }
+                    if tx_in_count > 3 {
+                        writeln!(f, "    ... and {} more inputs omitted", tx_in_count - 3)?;
+                    }
+
+                    writeln!(f, "  TxOut:")?;
+                    for (i, tx_out) in msg.tx_out.iter().take(3).enumerate() {
+                        let btc = tx_out.value as f64 / 100_000_000.0;
+                        if i == 2 || i == tx_out_count - 1 {
+                            write!(f, "    {}. Value: {:.8} BTC", i + 1, btc)?;
+                        } else {
+                            writeln!(f, "    {}. Value: {:.8} BTC", i + 1, btc)?;
+                        }
+                    }
+                    if tx_out_count > 3 {
+                        write!(f, "\n    ... and {} more outputs omitted", tx_out_count - 3)?;
+                    }
+                    Ok(())
+                }
+            }
             MessageCommand::GetData(msg) => {
                 let count = msg.inventory.len();
                 if count == 0 {
@@ -385,11 +417,7 @@ impl std::fmt::Display for MessageCommand {
                 } else {
                     writeln!(f, "GETDATA\n  Count: {}", count)?;
                     for (i, inv) in msg.inventory.iter().take(5).enumerate() {
-                        let mut hash_hex = String::with_capacity(64);
-                        for byte in inv.hash.iter().rev() {
-                            use std::fmt::Write;
-                            write!(&mut hash_hex, "{:02x}", byte).unwrap();
-                        }
+                        let hash_hex: String = inv.hash.iter().rev().map(|b| format!("{:02x}", b)).collect();
                         if i == 4 || i == count - 1 {
                             write!(f, "  {}. {:?} {}", i + 1, inv.inv_type, hash_hex)?;
                         } else {
@@ -435,6 +463,10 @@ impl MessageCommand {
             "inv" => {
                 let inv_msg = InvMessage::read(&mut reader)?;
                 Ok(MessageCommand::Inv(inv_msg))
+            }
+            "tx" => {
+                let tx_msg = TxMessage::read(&mut reader)?;
+                Ok(MessageCommand::Tx(tx_msg))
             }
             "headers" => {
                 let headers_msg = HeadersMessage::read(&mut reader)?;

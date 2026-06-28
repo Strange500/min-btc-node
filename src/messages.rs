@@ -1,4 +1,4 @@
-use std::io::{self, Read, Write};
+use std::{io::{self, Read, Write}, process::Output};
 use crate::codec::{read_varint, write_varint};
 
 #[derive(Debug, Clone)]
@@ -409,5 +409,158 @@ impl GetDataMessage {
             writer.write_all(&inv.hash)?;
         }
         Ok(())
+    }
+}
+
+
+
+
+#[derive(Debug, Clone)]
+pub struct TxMessage {
+    pub version: i32,
+    pub flag: u8, // If present, always 0001, and indicates the presence of witness data 
+    pub tx_in: Vec<TxIn>, // never empty
+    pub tx_out: Vec<TxOut>,
+    pub tx_witness: Option<Vec<TxMessageWitness>>,
+    pub lock_time: u32, // 0 not locked
+                        // < 500000000 : block height, otherwise unix timestamp
+}
+
+#[derive(Debug, Clone)]
+pub struct TxIn {
+    pub prev_txid: Outpoint,
+    pub script_sig: Vec<u8>, // uchar
+    pub sequence: u32,      
+}
+#[derive(Debug, Clone)]
+pub struct Outpoint {
+    pub hash: [u8; 32],
+    pub index: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct TxOut {
+    pub value: i64, // satoshi
+    pub pk_script: Vec<u8>,    // uchar usually the pub key
+}
+
+#[derive(Debug, Clone)]
+//The TxWitness structure consists of a var_int count of witness data components, followed by (for each witness data component) a var_int length of the component and the raw component data itself. 
+pub  struct TxMessageWitness {
+    pub witness: Vec<TxWitness>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TxWitness { 
+    pub witness_data: Vec<u8>, // uchar
+}
+
+impl TxMessage {
+    pub fn read(reader: &mut impl Read) -> io::Result<Self> {
+        let mut buf4 = [0u8; 4];
+        reader.read_exact(&mut buf4)?;
+        let version = i32::from_le_bytes(buf4);
+
+        let mut buf1 = [0u8; 1];
+        reader.read_exact(&mut buf1)?;
+        
+        let mut flag = 0;
+        let mut has_witness = false;
+        let tx_in_count;
+
+        if buf1[0] == 0 {
+            reader.read_exact(&mut buf1)?;
+            flag = buf1[0];
+            has_witness = flag == 1;
+            tx_in_count = read_varint(reader)?;
+        } else {
+            let mut chain = std::io::Cursor::new([buf1[0]]).chain(&mut *reader);
+            tx_in_count = read_varint(&mut chain)?;
+        }
+
+        let mut tx_in = Vec::with_capacity(tx_in_count as usize);
+        if tx_in_count == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Transaction must have at least one input"));
+        }
+        for _ in 0..tx_in_count {
+            tx_in.push(TxIn::read(reader)?);
+        }
+
+        let tx_out_count = read_varint(reader)?;
+        let mut tx_out = Vec::with_capacity(tx_out_count as usize);
+        for _ in 0..tx_out_count {
+            tx_out.push(TxOut::read(reader)?);
+        }
+
+        let tx_witness = if has_witness {
+            let mut witnesses = Vec::with_capacity(tx_in_count as usize);
+            for _ in 0..tx_in_count {
+                witnesses.push(TxMessageWitness::read(reader)?);
+            }
+            Some(witnesses)
+        } else {
+            None
+        };
+
+        reader.read_exact(&mut buf4)?;
+        let lock_time = u32::from_le_bytes(buf4);
+
+        Ok(TxMessage { version, flag, tx_in, tx_out, tx_witness, lock_time })
+    }
+}
+
+impl TxIn {
+    pub fn read(reader: &mut impl Read) -> io::Result<Self> {
+        let prev_txid = Outpoint::read(reader)?;
+        let script_length = read_varint(reader)?;
+        let mut script_sig = vec![0u8; script_length as usize];
+        reader.read_exact(&mut script_sig)?;
+        let mut buf4 = [0u8; 4];
+        reader.read_exact(&mut buf4)?;
+        let sequence = u32::from_le_bytes(buf4);
+        Ok(TxIn { prev_txid, script_sig, sequence })
+    }
+}
+
+impl Outpoint {
+    pub fn read(reader: &mut impl Read) -> io::Result<Self> {
+        let mut hash = [0u8; 32];
+        reader.read_exact(&mut hash)?;
+        let mut buf4 = [0u8; 4];
+        reader.read_exact(&mut buf4)?;
+        let index = u32::from_le_bytes(buf4);
+        Ok(Outpoint { hash, index })
+    }
+}
+
+impl TxOut {
+    pub fn read(reader: &mut impl Read) -> io::Result<Self> {
+        let mut buf8 = [0u8; 8];
+        reader.read_exact(&mut buf8)?;
+        let value = i64::from_le_bytes(buf8);
+        let pk_script_length = read_varint(reader)?;
+        let mut pk_script = vec![0u8; pk_script_length as usize];
+        reader.read_exact(&mut pk_script)?;
+        Ok(TxOut { value,  pk_script })
+    }
+}
+
+impl TxMessageWitness {
+    pub fn read(reader: &mut impl Read) -> io::Result<Self> {
+        let witness_count = read_varint(reader)?;
+        let mut witness = Vec::with_capacity(witness_count as usize);
+        for _ in 0..witness_count {
+            witness.push(TxWitness::read(reader)?);
+        }
+        Ok(TxMessageWitness { witness })
+    }
+}
+
+impl TxWitness {
+    pub fn read(reader: &mut impl Read) -> io::Result<Self> {
+        let witness_length = read_varint(reader)?;
+        let mut witness_data = vec![0u8; witness_length as usize];
+        reader.read_exact(&mut witness_data)?;
+        Ok(TxWitness { witness_data })
     }
 }

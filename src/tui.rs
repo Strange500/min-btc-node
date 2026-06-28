@@ -16,14 +16,24 @@ use crate::protocol::CHAIN_STATE;
 pub struct AppState {
     pub peers: Vec<(String, String)>,
     pub logs: Vec<String>,
+    pub txs: Vec<String>,
 }
 
 pub static APP_STATE: std::sync::LazyLock<std::sync::Mutex<AppState>> = std::sync::LazyLock::new(|| {
     std::sync::Mutex::new(AppState {
         peers: Vec::new(),
         logs: Vec::new(),
+        txs: Vec::new(),
     })
 });
+
+pub fn add_tx(msg: String) {
+    let mut state = APP_STATE.lock().unwrap();
+    state.txs.push(msg);
+    if state.txs.len() > 100 {
+        state.txs.remove(0);
+    }
+}
 
 pub fn add_log(msg: String) {
     let mut state = APP_STATE.lock().unwrap();
@@ -57,7 +67,8 @@ pub async fn run_tui() -> Result<(), io::Error> {
                     Constraint::Length(3),      // Chain status text
                     Constraint::Length(3),      // Gauge
                     Constraint::Length(7),      // Peers
-                    Constraint::Min(0),         // Logs
+                    Constraint::Percentage(50), // Txs
+                    Constraint::Percentage(50), // Logs
                 ].as_ref())
                 .split(f.area());
 
@@ -99,13 +110,22 @@ pub async fn run_tui() -> Result<(), io::Error> {
                 .block(Block::default().title(" Pairs Connectés ").borders(Borders::ALL).style(Style::default().fg(Color::Cyan)));
             f.render_widget(peers_list, chunks[2]);
 
+            let mut tx_items = Vec::new();
+            for tx in state.txs.iter().rev() {
+                tx_items.push(ListItem::new(tx.clone()));
+                tx_items.push(ListItem::new("─".repeat(40))); // Separator
+            }
+            let txs_list = List::new(tx_items)
+                .block(Block::default().title(" Transactions Live ").borders(Borders::ALL).style(Style::default().fg(Color::Magenta)));
+            f.render_widget(txs_list, chunks[3]);
+
             let mut log_items = Vec::new();
             for log in state.logs.iter().rev() {
                 log_items.push(ListItem::new(log.clone()));
             }
             let logs_list = List::new(log_items)
                 .block(Block::default().title(" Logs Réseau ").borders(Borders::ALL).style(Style::default().fg(Color::DarkGray)));
-            f.render_widget(logs_list, chunks[3]);
+            f.render_widget(logs_list, chunks[4]);
         })?;
 
         if event::poll(Duration::from_millis(100))?
