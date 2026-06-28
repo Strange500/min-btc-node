@@ -263,50 +263,7 @@ impl MessageCommand {
         actions
     }
 
-    pub fn version(net: Network) -> MessageCommand {
-        let mut addr_recv = [0u8; 26];
-        addr_recv[8..24].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 127, 0, 0, 1]);
-        addr_recv[24..26].copy_from_slice(&net.default_port().to_be_bytes());
 
-        let mut addr_from = [0u8; 26];
-        addr_from[8..24].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 127, 0, 0, 1]);
-        addr_from[24..26].copy_from_slice(&0u16.to_be_bytes());
-
-        MessageCommand::Version(VersionMessage {
-            version: PROTOCOL_VERSION,
-            services: 0,
-            timestamp: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64,
-            addr_recv,
-            addr_from,
-            nonce: 123456789,
-            user_agent: "/mini-node:0.1/".to_string(),
-            start_height: 0,
-            relay: 0,
-        })
-    }
-
-    pub fn getheaders(net: Network) -> MessageCommand {
-        let best_hash = {
-            let state = CHAIN_STATE.lock().unwrap();
-            state.best_block_hash
-        };
-        
-        let locator_hash = if best_hash == [0u8; 32] {
-            net.genesis_hash()
-        } else {
-            best_hash
-        };
-
-        MessageCommand::GetHeaders(GetHeadersMessage {
-            version: PROTOCOL_VERSION as u32,
-            hash_count: 1,
-            block_locator_hashes: vec![locator_hash],
-            stop_hash: [0u8; 32],
-        })
-    }
 
     pub fn encode(&self, net: Network) -> Vec<u8> {
         let mut payload = Vec::new();
@@ -519,7 +476,7 @@ mod tests {
     #[test]
     fn test_version_encode_decode() {
         let net = Network::Regtest;
-        let original = MessageCommand::version(net);
+        let original = MessageCommand::Version(crate::messages::VersionMessage::new(net));
         let encoded_packet = original.encode(net);
         
         let decoded = MessageCommand::from_packet(&encoded_packet, net);
@@ -562,7 +519,7 @@ mod tests {
     #[test]
     fn test_from_packet_incomplete() {
         let net = Network::Regtest;
-        let packet = MessageCommand::version(net).encode(net);
+        let packet = MessageCommand::Version(crate::messages::VersionMessage::new(net)).encode(net);
         
         let incomplete = &packet[0..packet.len() - 10];
         let decoded = MessageCommand::from_packet(incomplete, net);
@@ -572,7 +529,7 @@ mod tests {
     #[test]
     fn test_from_packet_corrupted_checksum() {
         let net = Network::Regtest;
-        let mut packet = MessageCommand::version(net).encode(net);
+        let mut packet = MessageCommand::Version(crate::messages::VersionMessage::new(net)).encode(net);
         
         // Corrupt the checksum (bytes 20..24)
         packet[20] ^= 0xFF;
@@ -584,7 +541,7 @@ mod tests {
     #[test]
     fn test_from_packet_corrupted_magic() {
         let net = Network::Regtest;
-        let mut packet = MessageCommand::version(net).encode(net);
+        let mut packet = MessageCommand::Version(crate::messages::VersionMessage::new(net)).encode(net);
         packet[0] = 0x00; 
         
         let decoded = MessageCommand::from_packet(&packet, net);

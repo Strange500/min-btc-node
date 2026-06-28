@@ -1,5 +1,7 @@
 use std::{io::{self, Read, Write}, process::Output};
 use crate::codec::{read_varint, write_varint};
+use crate::protocol::{Network, PROTOCOL_VERSION};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
 pub struct VersionMessage {
@@ -15,6 +17,30 @@ pub struct VersionMessage {
 }
 
 impl VersionMessage {
+    pub fn new(net: Network) -> Self {
+        let mut addr_recv = [0u8; 26];
+        addr_recv[8..24].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 127, 0, 0, 1]);
+        addr_recv[24..26].copy_from_slice(&net.default_port().to_be_bytes());
+
+        let mut addr_from = [0u8; 26];
+        addr_from[8..24].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 127, 0, 0, 1]);
+        addr_from[24..26].copy_from_slice(&0u16.to_be_bytes());
+
+        VersionMessage {
+            version: PROTOCOL_VERSION,
+            services: 0,
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
+            addr_recv,
+            addr_from,
+            nonce: 123456789,
+            user_agent: "/mini-node:0.1/".to_string(),
+            start_height: 0,
+            relay: 0,
+        }
+    }
     pub fn write(&self, writer: &mut impl Write) -> io::Result<()> {
         writer.write_all(&self.version.to_le_bytes())?;
         writer.write_all(&self.services.to_le_bytes())?;
@@ -90,6 +116,14 @@ pub struct GetHeadersMessage {
 }
 
 impl GetHeadersMessage {
+    pub fn new(locator_hash: [u8; 32]) -> Self {
+        GetHeadersMessage {
+            version: PROTOCOL_VERSION as u32,
+            hash_count: 1,
+            block_locator_hashes: vec![locator_hash],
+            stop_hash: [0u8; 32],
+        }
+    }
     pub fn write(&self, writer: &mut impl Write) -> io::Result<()> {
         writer.write_all(&self.version.to_le_bytes())?;
         write_varint(writer, self.hash_count)?;

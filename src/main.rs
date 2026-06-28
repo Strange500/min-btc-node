@@ -134,7 +134,7 @@ fn discover_peers(network: Network) -> Vec<SocketAddr> {
 }
 
 async fn handle_connection(stream: &mut TcpStream, network: Network, peer_idx: usize, target_peer: SocketAddr, has_sync_node: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
-    let version_message = MessageCommand::version(network).encode(network);
+    let version_message = MessageCommand::Version(crate::messages::VersionMessage::new(network)).encode(network);
 
     stream.write_all(&version_message).await?;
 
@@ -177,7 +177,15 @@ async fn handle_connection(stream: &mut TcpStream, network: Network, peer_idx: u
 
                         if guard.is_sync_node && added > 0 && headers_len == 2000 {
                             sleep(Duration::from_millis(50)).await;
-                            let getheaders = MessageCommand::getheaders(network);
+                            let locator_hash = {
+                                let state = crate::protocol::CHAIN_STATE.lock().unwrap();
+                                if state.best_block_hash == [0u8; 32] {
+                                    network.genesis_hash()
+                                } else {
+                                    state.best_block_hash
+                                }
+                            };
+                            let getheaders = MessageCommand::GetHeaders(crate::messages::GetHeadersMessage::new(locator_hash));
                             stream.write_all(&getheaders.encode(network)).await?;
                         }
                     }
@@ -187,7 +195,15 @@ async fn handle_connection(stream: &mut TcpStream, network: Network, peer_idx: u
                             tui::update_peer(peer_idx, target_peer.to_string(), "Sync Node 👑".to_string());
                             info!("👑 {} devient le Sync Node. Envoi de 'getheaders'...", target_peer);
                             
-                            let getheaders = MessageCommand::getheaders(network);
+                            let locator_hash = {
+                                let state = crate::protocol::CHAIN_STATE.lock().unwrap();
+                                if state.best_block_hash == [0u8; 32] {
+                                    network.genesis_hash()
+                                } else {
+                                    state.best_block_hash
+                                }
+                            };
+                            let getheaders = MessageCommand::GetHeaders(crate::messages::GetHeadersMessage::new(locator_hash));
                             stream.write_all(&getheaders.encode(network)).await?;
                         } else if !guard.is_sync_node {
                             tui::update_peer(peer_idx, target_peer.to_string(), "Standby 🎧".to_string());
