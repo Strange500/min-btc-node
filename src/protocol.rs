@@ -1,3 +1,10 @@
+//! Handles Bitcoin peer-to-peer network protocol operations.
+//!
+//! This module defines the state machine, constants, and overarching struct wrappers 
+//! (like `MessageCommand` and `PeerAction`) required to maintain sync state,
+//! parse incoming byte buffers into typed messages, and determine the next action 
+//! a peer should take.
+
 use std::io::{self, Read};
 use std::time::{SystemTime, UNIX_EPOCH};
 use sha2::{Sha256, Digest};
@@ -11,6 +18,9 @@ pub const PROTOCOL_VERSION: i32 = 70015;
 
 use clap::ValueEnum;
 
+/// Enumerates supported Bitcoin network types.
+///
+/// Controls magic bytes, DNS seeds, and genesis hashes for protocol synchronization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Network {
     Mainnet,
@@ -77,6 +87,11 @@ impl Network {
 }
 
 
+/// Represents the global state of the downloaded blockchain.
+///
+/// This state is kept entirely in memory and is backed periodically to disk 
+/// via `headers.dat`. It tracks the best known block hash and the target height 
+/// of the chain.
 pub struct ChainState {
     pub best_block_hash: [u8; 32],
     pub best_block_height: u32,
@@ -84,6 +99,7 @@ pub struct ChainState {
     pub header_cache: HashMap<[u8; 32], BlockHeader>,
 }
 
+/// Global thread-safe singleton representing the node's blockchain state.
 pub static CHAIN_STATE: LazyLock<Mutex<ChainState>> = LazyLock::new(|| {
     Mutex::new(ChainState {
         best_block_hash: [0u8; 32],
@@ -172,6 +188,10 @@ pub fn save_new_headers(headers: &[BlockHeader]) -> io::Result<usize> {
 }
 
 
+/// The core wrapper for all incoming and outgoing P2P messages.
+///
+/// Encapsulates the specific payload enum and provides methods to deserialize
+/// from raw socket bytes and to serialize into the standard Bitcoin wire format.
 #[derive(Debug, Clone)]
 pub enum MessageCommand {
     Version(VersionMessage),
@@ -186,10 +206,18 @@ pub enum MessageCommand {
     Unknown(String),
 }
 
+/// Represents an actionable side-effect triggered by an incoming message.
+///
+/// Instead of performing I/O directly in the parsing layer, the parser
+/// yields a sequence of `PeerAction`s to be executed by the connection handler.
 pub enum PeerAction {
+    /// Send a reply message back to the peer.
     Reply(MessageCommand),
+    /// Save a list of new headers to the local datastore.
     SaveHeaders(Vec<BlockHeader>),
+    /// Update the highest known block target.
     UpdateTargetHeight(u32),
+    /// Suggest that this peer should take over the Sync Node role.
     TryBecomeSyncNode,
 }
 
@@ -556,5 +584,19 @@ mod tests {
         
         let expected_checksum = double_sha256(payload);
         assert_eq!(&packet[20..24], &expected_checksum[..4], "Le checksum du header doit correspondre au double SHA-256 du payload");
+    }
+
+    #[test]
+    fn test_unknown_message() {
+        let net = Network::Regtest;
+        let payload = vec![0u8; 5];
+        let packet = forge_packet("weirdcmd", &payload, net);
+        let decoded = MessageCommand::from_packet(&packet, net);
+        assert!(decoded.is_some());
+        let (message, _) = decoded.unwrap();
+        match message {
+            MessageCommand::Unknown(cmd) => assert_eq!(cmd, "weirdcmd"),
+            _ => panic!("Expected Unknown message"),
+        }
     }
 }

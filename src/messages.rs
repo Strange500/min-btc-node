@@ -1,8 +1,18 @@
-use std::{io::{self, Read, Write}, process::Output};
+//! Low-level parsing and serialization of Bitcoin network payloads.
+//!
+//! This module defines the raw data structures corresponding to each Bitcoin P2P message
+//! (e.g., `version`, `getheaders`, `tx`, `inv`). It provides byte-level `read()` and
+//! `write()` methods for moving these structures directly onto the TCP socket.
+
+use std::io::{self, Read, Write};
 use crate::codec::{read_varint, write_varint};
 use crate::protocol::{Network, PROTOCOL_VERSION};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Represents the `version` network message payload.
+///
+/// Sent immediately upon connecting to a peer to negotiate protocol version
+/// and share basic identity metrics (like height and user-agent).
 #[derive(Debug, Clone)]
 pub struct VersionMessage {
     pub version: i32,
@@ -355,6 +365,82 @@ mod tests {
         assert_eq!(&buffer[37..41], &1u32.to_le_bytes()); // MsgTx
         assert_eq!(&buffer[41..73], &[0x42; 32]);
     }
+
+    #[test]
+    fn test_tx_message_legacy_read() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1i32.to_le_bytes()); // version
+        payload.push(1); // tx_in_count
+        payload.extend_from_slice(&[0u8; 32]); // prev_txid hash
+        payload.extend_from_slice(&0u32.to_le_bytes()); // prev_txid index
+        payload.push(2); // script_sig_length
+        payload.extend_from_slice(&[0x11, 0x22]); // script_sig
+        payload.extend_from_slice(&0xffffffffu32.to_le_bytes()); // sequence
+        payload.push(1); // tx_out_count
+        payload.extend_from_slice(&50_00000000i64.to_le_bytes()); // value
+        payload.push(2); // pk_script_length
+        payload.extend_from_slice(&[0x33, 0x44]); // pk_script
+        payload.extend_from_slice(&0u32.to_le_bytes()); // lock_time
+
+        let mut cursor = std::io::Cursor::new(payload);
+        let tx = crate::messages::TxMessage::read(&mut cursor).unwrap();
+
+        assert_eq!(tx.version, 1);
+        assert_eq!(tx.tx_in.len(), 1);
+        assert_eq!(tx.tx_out.len(), 1);
+        assert!(tx.tx_witness.is_none());
+        assert_eq!(tx.tx_in[0].script_sig, vec![0x11, 0x22]);
+        assert_eq!(tx.tx_out[0].value, 50_00000000);
+    }
+
+    #[test]
+    fn test_tx_message_segwit_read() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1i32.to_le_bytes()); // version
+        payload.push(0x00); // marker
+        payload.push(0x01); // flag
+        payload.push(1); // tx_in_count
+        payload.extend_from_slice(&[0u8; 32]); // prev_txid hash
+        payload.extend_from_slice(&0u32.to_le_bytes()); // prev_txid index
+        payload.push(2); // script_sig_length
+        payload.extend_from_slice(&[0x11, 0x22]); // script_sig
+        payload.extend_from_slice(&0xffffffffu32.to_le_bytes()); // sequence
+        payload.push(1); // tx_out_count
+        payload.extend_from_slice(&50_00000000i64.to_le_bytes()); // value
+        payload.push(2); // pk_script_length
+        payload.extend_from_slice(&[0x33, 0x44]); // pk_script
+        payload.push(1); // array length
+        payload.push(2); // witness_item length
+        payload.extend_from_slice(&[0x55, 0x66]); // data
+        payload.extend_from_slice(&0u32.to_le_bytes()); // lock_time
+
+        let mut cursor = std::io::Cursor::new(payload);
+        let tx = crate::messages::TxMessage::read(&mut cursor).unwrap();
+
+        assert_eq!(tx.version, 1);
+        assert_eq!(tx.tx_in.len(), 1);
+        assert_eq!(tx.tx_out.len(), 1);
+        assert!(tx.tx_witness.is_some());
+        let witness = tx.tx_witness.unwrap();
+        assert_eq!(witness.len(), 1);
+        assert_eq!(witness[0].witness.len(), 1);
+        assert_eq!(witness[0].witness[0].witness_data, vec![0x55, 0x66]);
+    }
+
+    #[test]
+    fn test_block_header_read() {
+        let mut payload = vec![0u8; 80];
+        payload[0..4].copy_from_slice(&2i32.to_le_bytes());
+        payload.push(0); // txn_count (varint 0)
+        let mut cursor = std::io::Cursor::new(payload);
+        let header = crate::messages::BlockHeader::read(&mut cursor).unwrap();
+        assert_eq!(header.version, 2);
+        assert_eq!(header.prev_block, [0u8; 32]);
+        assert_eq!(header.merkle_root, [0u8; 32]);
+        assert_eq!(header.timestamp, 0);
+        assert_eq!(header.bits, 0);
+        assert_eq!(header.nonce, 0);
+    }
 }
 #[derive(Debug, Clone)]
 pub struct InvMessage {
@@ -598,3 +684,5 @@ impl TxWitness {
         Ok(TxWitness { witness_data })
     }
 }
+
+

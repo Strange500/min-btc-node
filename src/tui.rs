@@ -1,3 +1,10 @@
+//! Terminal User Interface (TUI) components.
+//!
+//! This module uses `ratatui` and `crossterm` to draw an interactive dashboard
+//! displaying node connection status, synchronization progress, recent transactions,
+//! and network logs. It maintains a global thread-safe state buffer to decouple
+//! rendering logic from asynchronous networking tasks.
+
 use ratatui::{
     backend::CrosstermBackend,
     crossterm::{
@@ -13,12 +20,19 @@ use ratatui::{
 use std::{io, time::Duration};
 use crate::protocol::CHAIN_STATE;
 
+/// Holds the internal text buffers for the dashboard.
+///
+/// Limits the size of vectors to prevent unbounded memory growth during long runs.
 pub struct AppState {
+    /// List of peer addresses and their connection status.
     pub peers: Vec<(String, String)>,
+    /// Ring buffer for generic system logs.
     pub logs: Vec<String>,
+    /// Ring buffer for incoming live transaction logs.
     pub txs: Vec<String>,
 }
 
+/// Thread-safe global singleton storing the application's TUI state.
 pub static APP_STATE: std::sync::LazyLock<std::sync::Mutex<AppState>> = std::sync::LazyLock::new(|| {
     std::sync::Mutex::new(AppState {
         peers: Vec::new(),
@@ -27,6 +41,13 @@ pub static APP_STATE: std::sync::LazyLock<std::sync::Mutex<AppState>> = std::syn
     })
 });
 
+/// Appends a new transaction string to the TUI display.
+///
+/// Limits the historical list to 100 transactions to save memory.
+///
+/// # Arguments
+///
+/// * `msg` - The transaction summary formatted as a String.
 pub fn add_tx(msg: String) {
     let mut state = APP_STATE.lock().unwrap();
     state.txs.push(msg);
@@ -35,6 +56,13 @@ pub fn add_tx(msg: String) {
     }
 }
 
+/// Appends a general network log message to the TUI display.
+///
+/// Limits the historical list to 100 messages to save memory.
+///
+/// # Arguments
+///
+/// * `msg` - The log message to display.
 pub fn add_log(msg: String) {
     let mut state = APP_STATE.lock().unwrap();
     state.logs.push(msg);
@@ -43,6 +71,15 @@ pub fn add_log(msg: String) {
     }
 }
 
+/// Updates the status of a specific peer in the dashboard.
+///
+/// Ensures the internal peer list expands automatically to accommodate new indexes.
+///
+/// # Arguments
+///
+/// * `idx` - The zero-based index of the connection slot.
+/// * `address` - The peer's `SocketAddr` formatted as a string.
+/// * `status` - A human-readable string indicating the current connection state.
 pub fn update_peer(idx: usize, address: String, status: String) {
     let mut state = APP_STATE.lock().unwrap();
     if idx >= state.peers.len() {
@@ -51,6 +88,17 @@ pub fn update_peer(idx: usize, address: String, status: String) {
     state.peers[idx] = (address, status);
 }
 
+/// Enters the alternate screen buffer and blocks the current thread to draw the TUI loop.
+///
+/// Polls for keyboard input (`q` to quit) and renders the UI every 100ms.
+///
+/// # Errors
+///
+/// Returns an `io::Error` if terminal mode switching fails or rendering encounters an error.
+///
+/// # Exit Status
+///
+/// Restores the user's normal terminal on exit.
 pub async fn run_tui() -> Result<(), io::Error> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();

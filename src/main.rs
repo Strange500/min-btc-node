@@ -1,3 +1,17 @@
+//! A lightweight, interactive Bitcoin SPV (Simplified Payment Verification) mini-node.
+//!
+//! This application connects to the Bitcoin peer-to-peer network, discovers peers
+//! via DNS seeds, and maintains an asynchronous connection pool. It uses a terminal
+//! user interface (TUI) to visualize the real-time status of connections and network activity.
+//!
+//! # Terminal Usage
+//!
+//! ```sh
+//! $ btc-new --network mainnet
+//! $ btc-new --network testnet
+//! $ btc-new --network signet
+//! ```
+
 mod codec;
 mod messages;
 mod protocol;
@@ -22,6 +36,11 @@ macro_rules! error {
     ($($arg:tt)*) => { crate::tui::add_log(format!("ERROR: {}", format_args!($($arg)*))) };
 }
 
+/// Guard that ensures a peer relinquishes the `Sync Node` role upon disconnection.
+///
+/// Only one peer in the pool can be designated as the active "Sync Node" responsible
+/// for fetching headers and blocks. This guard drops the role atomically if the connection
+/// goes down.
 struct SyncNodeGuard {
     has_sync_node: Arc<AtomicBool>,
     pub is_sync_node: bool,
@@ -39,14 +58,36 @@ impl Drop for SyncNodeGuard {
 
 use clap::Parser;
 
+/// Command-line arguments for the Bitcoin mini-node.
+///
+/// # Examples
+///
+/// ```sh
+/// $ btc-new --network testnet
+/// ```
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Mini-nœud SPV Bitcoin interactif", long_about = None)]
 struct Args {
-    /// Le réseau Bitcoin à rejoindre (mainnet, signet, regtest)
+    /// The Bitcoin network to join (mainnet, signet, testnet, regtest).
+    ///
+    /// # Default
+    /// Defaults to `mainnet`.
     #[arg(short, long, default_value = "mainnet")]
     network: Network,
 }
 
+/// The main entry point of the application.
+///
+/// This async function sets up the peer pool, connects to peers found via DNS seeds,
+/// and spins up the Terminal User Interface.
+///
+/// # Errors
+///
+/// Returns an error if the async runtime fails or if the TUI cannot be initialized.
+///
+/// # Exit Status
+///
+/// Returns `0` on successful shutdown, or a non-zero exit code if a fatal error occurs.
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
@@ -121,6 +162,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Discovers Bitcoin peers by querying predefined DNS seeds for the specified network.
+///
+/// # Arguments
+///
+/// * `network` - The Bitcoin network to query seeds for.
+///
+/// # Returns
+///
+/// A vector of resolved `SocketAddr`s representing potential peers.
 fn discover_peers(network: Network) -> Vec<SocketAddr> {
     info!("🔍 Recherche de nœuds via DNS Seeds pour {:?}...", network);
     let mut peers = Vec::new();
@@ -133,6 +183,22 @@ fn discover_peers(network: Network) -> Vec<SocketAddr> {
     peers
 }
 
+/// Handles the full lifecycle of a connected Bitcoin peer.
+///
+/// Reads continuously from the `TcpStream` into a buffer, parses complete network
+/// messages, and dispatches them to `handle_peer_actions`.
+///
+/// # Arguments
+///
+/// * `stream` - The active TCP connection to the peer.
+/// * `network` - The active network (e.g., Mainnet).
+/// * `peer_idx` - The internal TUI index of this peer.
+/// * `target_peer` - The IP address of the peer.
+/// * `has_sync_node` - Shared atomic flag indicating if any peer is currently syncing.
+///
+/// # Errors
+///
+/// Returns an error if the TCP stream disconnects abruptly or if writing fails.
 async fn handle_connection(stream: &mut TcpStream, network: Network, peer_idx: usize, target_peer: SocketAddr, has_sync_node: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
     let version_message = MessageCommand::Version(crate::messages::VersionMessage::new(network)).encode(network);
     stream.write_all(&version_message).await?;
@@ -162,6 +228,23 @@ async fn handle_connection(stream: &mut TcpStream, network: Network, peer_idx: u
     Ok(())
 }
 
+/// Processes a series of actions resulting from parsing a network message.
+///
+/// Actions can include replying with `pong`, saving headers to disk, or
+/// attempting to take over the `Sync Node` role.
+///
+/// # Arguments
+///
+/// * `stream` - The TCP connection to send replies over.
+/// * `actions` - A vector of state-machine actions to execute.
+/// * `network` - The active Bitcoin network.
+/// * `peer_idx` - TUI index of the peer.
+/// * `target_peer` - Peer's socket address.
+/// * `guard` - The synchronization role guard for this peer.
+///
+/// # Errors
+///
+/// Returns an error if disk IO fails while saving headers, or if network writing fails.
 async fn handle_peer_actions(
     stream: &mut TcpStream,
     actions: Vec<protocol::PeerAction>,
@@ -207,6 +290,19 @@ async fn handle_peer_actions(
     Ok(())
 }
 
+/// Constructs and sends a `getheaders` message to the peer.
+///
+/// Automatically retrieves the latest locator hash from the internal chain state
+/// and requests subsequent headers from the network.
+///
+/// # Arguments
+///
+/// * `stream` - The TCP connection to send the request over.
+/// * `network` - The active Bitcoin network.
+///
+/// # Errors
+///
+/// Returns an error if writing to the stream fails.
 async fn request_headers(stream: &mut TcpStream, network: Network) -> Result<(), Box<dyn std::error::Error>> {
     let locator_hash = get_locator_hash(network);
     let getheaders = MessageCommand::GetHeaders(crate::messages::GetHeadersMessage::new(locator_hash));
@@ -214,6 +310,17 @@ async fn request_headers(stream: &mut TcpStream, network: Network) -> Result<(),
     Ok(())
 }
 
+/// Retrieves the best known block hash to use as a locator.
+///
+/// If no blocks have been downloaded, returns the genesis block hash for the active network.
+///
+/// # Arguments
+///
+/// * `network` - The active Bitcoin network.
+///
+/// # Returns
+///
+/// A 32-byte array containing the double-SHA256 hash of the block.
 fn get_locator_hash(network: Network) -> [u8; 32] {
     let state = crate::protocol::CHAIN_STATE.lock().unwrap();
     if state.best_block_hash == [0u8; 32] {
