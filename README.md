@@ -11,13 +11,25 @@ This project provides an autonomous, highly performant Bitcoin network client th
 * **Asynchronous Networking**: Built on `tokio` for concurrent peer connection pool management and resilient timeout handling.
 * **Lean Observability**: A lightweight terminal UI (TUI) powered by `ratatui` handles real-time visual logging without bloated tracing pipelines.
 
-## Capabilities
+## Project Structure
 
+This repository is organized as a Cargo workspace containing two core components:
+
+### 1. Bitcoin Mini-Node (`node`)
+The autonomous SPV network client responsible for handling the P2P layer and blockchain state.
 * **Network Handshake**: Fully implements the Bitcoin protocol handshake (`version`, `verack`) and heartbeat keep-alives (`ping`, `pong`).
 * **Header Synchronization**: Automatically negotiates and downloads block headers via `getheaders`.
 * **PoW Validation**: Cryptographically validates the double SHA-256 Proof-of-Work constraints for all ingested headers.
+* **Client-Side Filtering**: Discards legacy network Bloom filters in favor of local Base58 address decoding and silent client-side `Tx` filtering for optimal reliability.
 * **Binary Persistence**: Persists headers to a compact, raw binary `.dat` file (80 bytes per block) to minimize disk overhead and syscalls.
-* **Mempool Monitoring**: Parses `inv` broadcasts and requests live `tx` payloads via `getdata`, deserializing legacy and SegWit transaction formats natively.
+
+### 2. Script Execution Engine (`script-engine`)
+A stateless, standalone Stack-Based Virtual Machine (VM) responsible for evaluating Bitcoin locking (`scriptPubKey`) and unlocking (`scriptSig`/Witness) scripts.
+* **Tokenization**: Parsing raw byte arrays into executable Bitcoin Opcodes and strict data pushes.
+* **State Management**: Implementation of the Main Stack, Alternate Stack, and an Execution Stack for handling control flow (e.g., `OP_IF` / `OP_ELSE`).
+* **Opcode Execution**: Processing stack manipulation, bitwise logic, and cryptographic operations (e.g., `OP_CHECKSIG`, `OP_HASH160`) using `secp256k1`.
+* **Consensus Safeguards**: Strict enforcement of protocol limits, including the 520-byte max element size, 1000 max stack depth, opcode limits, and the clean stack validation rule.
+* **Transaction Types**: Support for evaluating standard output types, including P2PKH and native SegWit (P2WPKH).
 
 ## Non-Goals
 
