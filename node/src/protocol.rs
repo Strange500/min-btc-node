@@ -329,6 +329,25 @@ impl MessageCommand {
         Some((message, 24 + payload_len))
     }
 
+    pub fn matches_filter(&self, filter_hashes: &[Vec<u8>]) -> bool {
+        if filter_hashes.is_empty() {
+            return true;
+        }
+        match self {
+            MessageCommand::Tx(tx) => {
+                for tx_out in &tx.tx_out {
+                    for hash in filter_hashes {
+                        if tx_out.pk_script.windows(hash.len()).any(|w| w == hash) {
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
+            MessageCommand::Inv(_) | MessageCommand::GetData(_) => false,
+            _ => true,
+        }
+    }
 }
 
 impl std::fmt::Display for MessageCommand {
@@ -384,7 +403,7 @@ impl std::fmt::Display for MessageCommand {
                     writeln!(f, "  TxIn:")?;
                     for (i, tx_in) in msg.tx_in.iter().take(3).enumerate() {
                         let hash_hex: String = tx_in.prev_txid.hash.iter().rev().map(|b| format!("{:02x}", b)).collect();
-                        writeln!(f, "    {}. PrevHash: {} Index: {}", i + 1, hash_hex, tx_in.prev_txid.index)?;
+                        writeln!(f, "    {}. From TXID: {} (Index: {})", i + 1, hash_hex, tx_in.prev_txid.index)?;
                     }
                     if tx_in_count > 3 {
                         writeln!(f, "    ... and {} more inputs omitted", tx_in_count - 3)?;
@@ -393,10 +412,12 @@ impl std::fmt::Display for MessageCommand {
                     writeln!(f, "  TxOut:")?;
                     for (i, tx_out) in msg.tx_out.iter().take(3).enumerate() {
                         let btc = tx_out.value as f64 / 100_000_000.0;
+                        let addr = crate::codec::pk_script_to_address(&tx_out.pk_script)
+                            .unwrap_or_else(|| "[Unknown/Non-Standard Script]".to_string());
                         if i == 2 || i == tx_out_count - 1 {
-                            write!(f, "    {}. Value: {:.8} BTC", i + 1, btc)?;
+                            write!(f, "    {}. {:.8} BTC -> To: {}", i + 1, btc, addr)?;
                         } else {
-                            writeln!(f, "    {}. Value: {:.8} BTC", i + 1, btc)?;
+                            writeln!(f, "    {}. {:.8} BTC -> To: {}", i + 1, btc, addr)?;
                         }
                     }
                     if tx_out_count > 3 {

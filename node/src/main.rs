@@ -74,6 +74,11 @@ struct Args {
     /// Defaults to `mainnet`.
     #[arg(short, long, default_value = "mainnet")]
     network: Network,
+
+    /// Specific Bitcoin addresses to track locally (Client-Side Filtering).
+    /// Can be specified multiple times (e.g., -a ADDR1 -a ADDR2).
+    #[arg(short, long)]
+    address: Vec<String>,
 }
 
 /// The main entry point of the application.
@@ -94,6 +99,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let network = args.network;
     let pool_size = 3;
+
+    let mut filter_hashes = Vec::new();
+    for addr_str in &args.address {
+        if let Some(decoded) = crate::codec::decode_base58(addr_str) {
+            if decoded.len() >= 25 {
+                let hash_only = &decoded[1..21];
+                filter_hashes.push(hash_only.to_vec());
+                info!("🔍 Tracking address {} (Hash: {:x?})", addr_str, hash_only);
+            } else {
+                warn!("⚠️ Invalid address length for {}. Skipping.", addr_str);
+            }
+        } else {
+            warn!("⚠️ Failed to decode Base58 address: {}. Skipping.", addr_str);
+        }
+    }
     
     match protocol::load_headers() {
         Ok(count) if count > 0 => {
@@ -117,11 +137,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let peer_index = Arc::new(AtomicUsize::new(0));
 
     let has_sync_node = Arc::new(AtomicBool::new(false));
+    let filter_hashes = Arc::new(filter_hashes);
 
     for peer_idx in 0..pool_size {
         let has_sync_node = has_sync_node.clone();
         let peer_pool = peer_pool.clone();
         let peer_index = peer_index.clone();
+        let filter_hashes = filter_hashes.clone();
         
         tokio::spawn(async move {
             loop {
@@ -138,7 +160,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         info!("✅ Connecté avec succès au peer {}!", target_peer);
                         tui::update_peer(peer_idx, target_peer.to_string(), "Connecté 🤝".to_string());
                         
-                        if let Err(e) = handle_connection(&mut stream, network, peer_idx, target_peer, has_sync_node.clone()).await {
+                        if let Err(e) = handle_connection(&mut stream, network, peer_idx, target_peer, has_sync_node.clone(), filter_hashes.clone()).await {
                             error!("❌ Erreur avec {} : {}", target_peer, e);
                         }
                     }
@@ -199,9 +221,13 @@ fn discover_peers(network: Network) -> Vec<SocketAddr> {
 /// # Errors
 ///
 /// Returns an error if the TCP stream disconnects abruptly or if writing fails.
-async fn handle_connection(stream: &mut TcpStream, network: Network, peer_idx: usize, target_peer: SocketAddr, has_sync_node: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
+async fn handle_connection(stream: &mut TcpStream, network: Network, peer_idx: usize, target_peer: SocketAddr, has_sync_node: Arc<AtomicBool>, filter_hashes: Arc<Vec<Vec<u8>>>) -> Result<(), Box<dyn std::error::Error>> {
     let version_message = MessageCommand::Version(crate::messages::VersionMessage::new(network)).encode(network);
     stream.write_all(&version_message).await?;
+
+    if !filter_hashes.is_empty() {
+        info!("🛡️  Filtrage Client-Side activé pour {} adresses sur le nœud {}.", filter_hashes.len(), target_peer);
+    }
 
     let mut buffer = [0u8; 1024];
     let mut pending = Vec::new();
@@ -218,7 +244,10 @@ async fn handle_connection(stream: &mut TcpStream, network: Network, peer_idx: u
 
         while let Some((message, consumed)) = MessageCommand::from_packet(&pending, network) {
             pending.drain(0..consumed);
-            info!("📥 {}", message);
+            
+            if message.matches_filter(&filter_hashes) {
+                info!("📥 {}", message);
+            }
 
             let actions = message.process();
             handle_peer_actions(stream, actions, network, peer_idx, target_peer, &mut guard).await?;
