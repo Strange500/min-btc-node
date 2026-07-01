@@ -1,3 +1,7 @@
+use sha2::{Sha256, Digest};
+
+pub mod transaction;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction {
     Op(OpCode),
@@ -130,6 +134,78 @@ pub enum OpCode {
     OpNopFuture(u8),      // 0xb0, 0xb3 - 0xb9
     OpReturnSuccess(u8),  // 0xbb - 0xfe
     OpInvalidOpcode,      // 0xff
+}
+
+
+impl OpCode {
+    pub fn execute(&self, context: &mut ExecutionContext) -> Result<(), String> {
+        match self {
+            OpCode::Op0 => {
+                context.stack.push(vec![]);
+                Ok(())
+            }
+            OpCode::Op1Negate => {
+                context.stack.push(vec![0x81]); // -1 in little-endian
+                Ok(())
+            }
+            OpCode::OpPushNum(n) => {
+                if *n == 0 {
+                    context.stack.push(vec![]);
+                } else {
+                    context.stack.push(vec![*n]);
+                }
+                Ok(())
+            }
+            OpCode::OpDup => {
+                if let Some(top) = context.stack.last() {
+                    context.stack.push(top.clone());
+                    Ok(())
+                } else {
+                    Err("Stack underflow on OP_DUP".to_string())
+                }
+            }
+            OpCode::OpHash160 => {
+                if let Some(top) = context.stack.pop() {
+                    let sha256_hash = Sha256::digest(&top);
+                    let hash = ripemd::Ripemd160::digest(&sha256_hash);
+                    context.stack.push(hash.to_vec());
+                    Ok(())
+                } else {
+                    Err("Stack underflow on OP_HASH160".to_string())
+                }
+            }
+            OpCode::OpEqual => {
+                if context.stack.len() < 2 {
+                    return Err("Stack underflow on OP_EQUAL".to_string());
+                }
+                let a = context.stack.pop().unwrap();
+                let b = context.stack.pop().unwrap();
+                if a == b {
+                    context.stack.push(vec![1]); // true
+                } else {
+                    context.stack.push(vec![]); // false
+                }
+                Ok(())
+            }
+            OpCode::OpEqualVerify => {
+                if context.stack.len() < 2 {
+                    return Err("Stack underflow on OP_EQUALVERIFY".to_string());
+                }
+                let a = context.stack.pop().unwrap();
+                let b = context.stack.pop().unwrap();
+                if a != b {
+                    return Err("OP_EQUALVERIFY failed".to_string());
+                }
+                Ok(())
+            }
+            OpCode::OpCheckSig => {
+                // Placeholder for signature verification logic
+                Err("OP_CHECKSIG not implemented yet".to_string())
+            }
+
+            _ => Err(format!("Opcode {:?} not implemented yet", self)),
+        }
+    }
 }
 
 pub fn parse_script(script: &[u8]) -> Vec<Instruction> {
@@ -316,6 +392,89 @@ pub fn parse_script(script: &[u8]) -> Vec<Instruction> {
     }
     instructions
 }
+
+
+
+struct ExecutionContext {
+    stack: Vec<Vec<u8>>,
+    alt_stack: Vec<Vec<u8>>,
+    exec_stack: Vec<bool>,
+}
+
+
+
+impl ExecutionContext {
+    fn new() -> Self {
+        ExecutionContext {
+            stack: Vec::new(),
+            alt_stack: Vec::new(),
+            exec_stack: Vec::new(),
+        }
+    }
+
+
+    fn execute(&mut self, instructions: &[Instruction]) -> Result<(), String> {
+        for inst in instructions {
+            match inst {
+                Instruction::Op(op) => self.execute_op(*op)?,
+                Instruction::PushData(data) => self.stack.push(data.clone()),
+            }
+        }
+        Ok(())
+    }
+
+    fn execute_op(&mut self, op: OpCode) -> Result<(), String> {
+        match op {
+            OpCode::OpCheckSig => {
+                if self.stack.len() < 2 {
+                    return Err("OP_CHECKSIG requires 2 items on stack".to_string());
+                }
+                let pubkey_bytes = self.stack.pop().unwrap();
+                let sig_bytes = self.stack.pop().unwrap();
+
+                if sig_bytes.is_empty() {
+                    self.stack.push(vec![]); // Push false
+                    return Ok(());
+                }
+
+                // The last byte of the signature is the hashtype
+                let hash_type = *sig_bytes.last().unwrap() as u32;
+                let der_sig = &sig_bytes[..sig_bytes.len() - 1];
+
+                // Note: The VM currently lacks the Tx and input_index context in this stub.
+                // In a real execution, we would call:
+                // let hash = tx.signature_hash(input_index, &subscript, hash_type);
+                // Here we just mock the hash for structural completeness until the VM takes Tx context.
+                let hash_placeholder = [0u8; 32];
+
+                use secp256k1::{Secp256k1, Message, ecdsa::Signature, PublicKey};
+                let secp = Secp256k1::verification_only();
+                
+                let is_valid = match (PublicKey::from_slice(&pubkey_bytes), Signature::from_der(der_sig)) {
+                    (Ok(pk), Ok(sig)) => {
+                        let msg = Message::from_digest(hash_placeholder);
+                        secp.verify_ecdsa(msg, &sig, &pk).is_ok()
+                    }
+                    _ => false,
+                };
+
+                if is_valid {
+                    self.stack.push(vec![1]); // True
+                } else {
+                    self.stack.push(vec![]); // False
+                }
+                Ok(())
+            }
+            _ => {
+                // Ignore other opcodes for now
+                Ok(())
+            }
+        }
+    }
+}
+
+
+
 
 #[cfg(test)]
 mod tests {
