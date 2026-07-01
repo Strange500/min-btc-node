@@ -195,13 +195,123 @@ pub fn parse_script(script: &[u8]) -> Vec<Instruction> {
                 i += 1; 
             },
             
-            // Temporary fallback for mapped opcodes we haven't explicitely added to match yet
-            _ => {
-                // For now, if we don't have it matched, just push invalid opcode
-                // (In the full version, we will match byte to the specific enum variant)
-                instructions.push(Instruction::Op(OpCode::OpInvalidOpcode));
-                i += 1;
+            0x4d => {
+                // OP_PUSHDATA2
+                if i + 3 <= script.len() {
+                    let len = (script[i + 1] as usize) | ((script[i + 2] as usize) << 8);
+                    if i + 3 + len <= script.len() {
+                        let data = script[i + 3..i + 3 + len].to_vec();
+                        instructions.push(Instruction::PushData(data));
+                        i += 3 + len;
+                    } else {
+                        instructions.push(Instruction::Op(OpCode::OpInvalidOpcode));
+                        break;
+                    }
+                } else {
+                    instructions.push(Instruction::Op(OpCode::OpInvalidOpcode));
+                    break;
+                }
             }
+            0x4e => {
+                // OP_PUSHDATA4
+                if i + 5 <= script.len() {
+                    let len = (script[i + 1] as usize) | ((script[i + 2] as usize) << 8) | ((script[i + 3] as usize) << 16) | ((script[i + 4] as usize) << 24);
+                    if i + 5 + len <= script.len() {
+                        let data = script[i + 5..i + 5 + len].to_vec();
+                        instructions.push(Instruction::PushData(data));
+                        i += 5 + len;
+                    } else {
+                        instructions.push(Instruction::Op(OpCode::OpInvalidOpcode));
+                        break;
+                    }
+                } else {
+                    instructions.push(Instruction::Op(OpCode::OpInvalidOpcode));
+                    break;
+                }
+            }
+            0x4f => { instructions.push(Instruction::Op(OpCode::Op1Negate)); i += 1; }
+            0x50 => { instructions.push(Instruction::Op(OpCode::OpReserved)); i += 1; }
+            0x61 => { instructions.push(Instruction::Op(OpCode::OpNop)); i += 1; }
+            0x62 => { instructions.push(Instruction::Op(OpCode::OpVer)); i += 1; }
+            0x63 => { instructions.push(Instruction::Op(OpCode::OpIf)); i += 1; }
+            0x64 => { instructions.push(Instruction::Op(OpCode::OpNotIf)); i += 1; }
+            0x65 => { instructions.push(Instruction::Op(OpCode::OpVerIf)); i += 1; }
+            0x66 => { instructions.push(Instruction::Op(OpCode::OpVerNotIf)); i += 1; }
+            0x67 => { instructions.push(Instruction::Op(OpCode::OpElse)); i += 1; }
+            0x68 => { instructions.push(Instruction::Op(OpCode::OpEndIf)); i += 1; }
+            0x69 => { instructions.push(Instruction::Op(OpCode::OpVerify)); i += 1; }
+            0x6a => { instructions.push(Instruction::Op(OpCode::OpReturn)); i += 1; }
+            0x6b => { instructions.push(Instruction::Op(OpCode::OpToAltStack)); i += 1; }
+            0x6c => { instructions.push(Instruction::Op(OpCode::OpFromAltStack)); i += 1; }
+            0x6d => { instructions.push(Instruction::Op(OpCode::Op2Drop)); i += 1; }
+            0x6e => { instructions.push(Instruction::Op(OpCode::Op2Dup)); i += 1; }
+            0x6f => { instructions.push(Instruction::Op(OpCode::Op3Dup)); i += 1; }
+            0x70 => { instructions.push(Instruction::Op(OpCode::Op2Over)); i += 1; }
+            0x71 => { instructions.push(Instruction::Op(OpCode::Op2Rot)); i += 1; }
+            0x72 => { instructions.push(Instruction::Op(OpCode::Op2Swap)); i += 1; }
+            0x73 => { instructions.push(Instruction::Op(OpCode::OpIfDup)); i += 1; }
+            0x74 => { instructions.push(Instruction::Op(OpCode::OpDepth)); i += 1; }
+            0x75 => { instructions.push(Instruction::Op(OpCode::OpDrop)); i += 1; }
+            0x76 => { instructions.push(Instruction::Op(OpCode::OpDup)); i += 1; }
+            0x77 => { instructions.push(Instruction::Op(OpCode::OpNip)); i += 1; }
+            0x78 => { instructions.push(Instruction::Op(OpCode::OpOver)); i += 1; }
+            0x79 => { instructions.push(Instruction::Op(OpCode::OpPick)); i += 1; }
+            0x7a => { instructions.push(Instruction::Op(OpCode::OpRoll)); i += 1; }
+            0x7b => { instructions.push(Instruction::Op(OpCode::OpRot)); i += 1; }
+            0x7c => { instructions.push(Instruction::Op(OpCode::OpSwap)); i += 1; }
+            0x7d => { instructions.push(Instruction::Op(OpCode::OpTuck)); i += 1; }
+            0x7e => { instructions.push(Instruction::Op(OpCode::OpCat)); i += 1; }
+            0x7f => { instructions.push(Instruction::Op(OpCode::OpSubStr)); i += 1; }
+            0x80 => { instructions.push(Instruction::Op(OpCode::OpLeft)); i += 1; }
+            0x81 => { instructions.push(Instruction::Op(OpCode::OpRight)); i += 1; }
+            0x82 => { instructions.push(Instruction::Op(OpCode::OpSize)); i += 1; }
+            0x83 => { instructions.push(Instruction::Op(OpCode::OpInvert)); i += 1; }
+            0x84 => { instructions.push(Instruction::Op(OpCode::OpAnd)); i += 1; }
+            0x85 => { instructions.push(Instruction::Op(OpCode::OpOr)); i += 1; }
+            0x86 => { instructions.push(Instruction::Op(OpCode::OpXor)); i += 1; }
+            0x87 => { instructions.push(Instruction::Op(OpCode::OpEqual)); i += 1; }
+            0x88 => { instructions.push(Instruction::Op(OpCode::OpEqualVerify)); i += 1; }
+            0x89 => { instructions.push(Instruction::Op(OpCode::OpReserved1)); i += 1; }
+            0x8a => { instructions.push(Instruction::Op(OpCode::OpReserved2)); i += 1; }
+            0x8b => { instructions.push(Instruction::Op(OpCode::Op1Add)); i += 1; }
+            0x8c => { instructions.push(Instruction::Op(OpCode::Op1Sub)); i += 1; }
+            0x8d => { instructions.push(Instruction::Op(OpCode::Op2Mul)); i += 1; }
+            0x8e => { instructions.push(Instruction::Op(OpCode::Op2Div)); i += 1; }
+            0x8f => { instructions.push(Instruction::Op(OpCode::OpNegate)); i += 1; }
+            0x90 => { instructions.push(Instruction::Op(OpCode::OpAbs)); i += 1; }
+            0x91 => { instructions.push(Instruction::Op(OpCode::OpNot)); i += 1; }
+            0x92 => { instructions.push(Instruction::Op(OpCode::Op0NotEqual)); i += 1; }
+            0x93 => { instructions.push(Instruction::Op(OpCode::OpAdd)); i += 1; }
+            0x94 => { instructions.push(Instruction::Op(OpCode::OpSub)); i += 1; }
+            0x95 => { instructions.push(Instruction::Op(OpCode::OpMul)); i += 1; }
+            0x96 => { instructions.push(Instruction::Op(OpCode::OpDiv)); i += 1; }
+            0x97 => { instructions.push(Instruction::Op(OpCode::OpMod)); i += 1; }
+            0x98 => { instructions.push(Instruction::Op(OpCode::OpLShift)); i += 1; }
+            0x99 => { instructions.push(Instruction::Op(OpCode::OpRShift)); i += 1; }
+            0x9a => { instructions.push(Instruction::Op(OpCode::OpBoolAnd)); i += 1; }
+            0x9b => { instructions.push(Instruction::Op(OpCode::OpBoolOr)); i += 1; }
+            0x9c => { instructions.push(Instruction::Op(OpCode::OpNumEqual)); i += 1; }
+            0x9d => { instructions.push(Instruction::Op(OpCode::OpNumEqualVerify)); i += 1; }
+            0x9e => { instructions.push(Instruction::Op(OpCode::OpNumNotEqual)); i += 1; }
+            0x9f => { instructions.push(Instruction::Op(OpCode::OpLessThan)); i += 1; }
+            0xa0 => { instructions.push(Instruction::Op(OpCode::OpGreaterThan)); i += 1; }
+            0xa1 => { instructions.push(Instruction::Op(OpCode::OpLessThanOrEqual)); i += 1; }
+            0xa2 => { instructions.push(Instruction::Op(OpCode::OpGreaterThanOrEqual)); i += 1; }
+            0xa3 => { instructions.push(Instruction::Op(OpCode::OpMin)); i += 1; }
+            0xa4 => { instructions.push(Instruction::Op(OpCode::OpMax)); i += 1; }
+            0xa5 => { instructions.push(Instruction::Op(OpCode::OpWithin)); i += 1; }
+            0xa6 => { instructions.push(Instruction::Op(OpCode::OpRipemd160)); i += 1; }
+            0xa7 => { instructions.push(Instruction::Op(OpCode::OpSha1)); i += 1; }
+            0xa8 => { instructions.push(Instruction::Op(OpCode::OpSha256)); i += 1; }
+            0xaa => { instructions.push(Instruction::Op(OpCode::OpHash256)); i += 1; }
+            0xab => { instructions.push(Instruction::Op(OpCode::OpCodeSeparator)); i += 1; }
+            0xad => { instructions.push(Instruction::Op(OpCode::OpCheckSigVerify)); i += 1; }
+            0xae => { instructions.push(Instruction::Op(OpCode::OpCheckMultiSig)); i += 1; }
+            0xaf => { instructions.push(Instruction::Op(OpCode::OpCheckMultiSigVerify)); i += 1; }
+            0xb1 => { instructions.push(Instruction::Op(OpCode::OpCheckLockTimeVerify)); i += 1; }
+            0xb2 => { instructions.push(Instruction::Op(OpCode::OpCheckSequenceVerify)); i += 1; }
+            0xba => { instructions.push(Instruction::Op(OpCode::OpCheckSigAdd)); i += 1; }
+            0xff => { instructions.push(Instruction::Op(OpCode::OpInvalidOpcode)); i += 1; }
         }
     }
     instructions
