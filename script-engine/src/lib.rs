@@ -1,7 +1,5 @@
 use sha2::{Sha256, Digest};
 
-pub mod transaction;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction {
     Op(OpCode),
@@ -256,7 +254,7 @@ pub fn parse_script(script: &[u8]) -> Vec<Instruction> {
                 // OP_PUSHBYTES_N
                 let len = byte as usize;
                 if i + 1 + len <= script.len() {
-                    let data = script[i + 1..i + 1 + len].to_vec();
+                    let data: Vec<u8> = script[i + 1..i + 1 + len].to_vec();
                     instructions.push(Instruction::PushData(data));
                     i += 1 + len;
                 } else {
@@ -425,7 +423,7 @@ pub fn parse_script(script: &[u8]) -> Vec<Instruction> {
     instructions
 }
 
-use crate::transaction::Transaction;
+use primitives::transaction::TxMessage as Transaction;
 
 pub struct ExecutionContext {
     pub stack: Vec<Vec<u8>>,
@@ -454,7 +452,7 @@ impl ExecutionContext {
 #[cfg(test)]
 mod vm_tests {
     use super::*;
-    use crate::transaction::{Transaction, TxIn, TxOut};
+    use primitives::transaction::{TxMessage as Transaction, TxIn, TxOut, Outpoint};
     use secp256k1::{Secp256k1, SecretKey, Message};
     use sha2::{Sha256, Digest};
 
@@ -474,17 +472,18 @@ mod vm_tests {
         // Create a dummy transaction
         let tx = Transaction {
             version: 1,
-            inputs: vec![TxIn {
-                prev_txid: [0u8; 32],
-                prev_index: 0,
+            tx_in: vec![TxIn {
+                prev_txid: Outpoint { hash: [0u8; 32], index: 0 },
                 script_sig: vec![],
                 sequence: 0xffffffff,
             }],
-            outputs: vec![TxOut {
+            tx_out: vec![TxOut {
                 value: 50_000,
                 pk_script: vec![],
             }],
+            tx_witness: None,
             lock_time: 0,
+            flag: 0,
         };
 
         // For P2PKH, the script_code that is hashed for SIGHASH is the scriptPubKey without any signatures 
@@ -537,9 +536,11 @@ mod vm_tests {
 
         let tx = Transaction {
             version: 1,
-            inputs: vec![TxIn { prev_txid: [0u8; 32], prev_index: 0, script_sig: vec![], sequence: 0xffffffff }],
-            outputs: vec![],
+            tx_in: vec![TxIn { prev_txid: Outpoint { hash: [0u8; 32], index: 0 }, script_sig: vec![], sequence: 0xffffffff }],
+            tx_out: vec![],
+            tx_witness: None,
             lock_time: 0,
+            flag: 0,
         };
 
         let mut script_code = vec![0x76, 0xa9, 0x14];

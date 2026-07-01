@@ -156,6 +156,7 @@ name = "bitcoin-mini-node"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "primitives",
  "ratatui",
  "sha2 0.10.9",
  "tokio",
@@ -1153,6 +1154,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "primitives"
+version = "0.1.0"
+dependencies = [
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.106"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1418,6 +1426,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "script-engine"
 version = "0.1.0"
 dependencies = [
+ "primitives",
  "ripemd",
  "secp256k1",
  "sha1",

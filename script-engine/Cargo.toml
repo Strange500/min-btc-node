@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+primitives = { version = "0.1.0", path = "../primitives" }
 ripemd = "0.2.0"
 secp256k1 = "0.31.1"
 sha1 = "0.11.0"

@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "node",
+    "node", "primitives",
     "script-engine"
 ]
 resolver = "2"

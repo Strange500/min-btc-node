@@ -12,8 +12,8 @@
 //! $ btc-new --network signet
 //! ```
 
-mod codec;
-mod messages;
+
+
 mod protocol;
 mod tui;
 
@@ -21,7 +21,8 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
-use protocol::{MessageCommand, Network};
+use protocol::MessageCommand;
+use primitives::network::Network;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -56,7 +57,24 @@ impl Drop for SyncNodeGuard {
     }
 }
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum CliNetwork {
+    Mainnet,
+    Signet,
+    Regtest,
+}
+
+impl Into<Network> for CliNetwork {
+    fn into(self) -> Network {
+        match self {
+            CliNetwork::Mainnet => Network::Mainnet,
+            CliNetwork::Signet => Network::Signet,
+            CliNetwork::Regtest => Network::Regtest,
+        }
+    }
+}
 
 /// Command-line arguments for the Bitcoin mini-node.
 ///
@@ -73,7 +91,7 @@ struct Args {
     /// # Default
     /// Defaults to `mainnet`.
     #[arg(short, long, default_value = "mainnet")]
-    network: Network,
+    network: CliNetwork,
 
     /// Specific Bitcoin addresses to track locally (Client-Side Filtering).
     /// Can be specified multiple times (e.g., -a ADDR1 -a ADDR2).
@@ -97,12 +115,12 @@ struct Args {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let network = args.network;
+    let network: Network = args.network.into();
     let pool_size = 3;
 
     let mut filter_hashes = Vec::new();
     for addr_str in &args.address {
-        if let Some(decoded) = crate::codec::decode_base58(addr_str) {
+        if let Some(decoded) = primitives::codec::decode_base58(addr_str) {
             if decoded.len() >= 25 {
                 let hash_only = &decoded[1..21];
                 filter_hashes.push(hash_only.to_vec());
@@ -222,7 +240,7 @@ fn discover_peers(network: Network) -> Vec<SocketAddr> {
 ///
 /// Returns an error if the TCP stream disconnects abruptly or if writing fails.
 async fn handle_connection(stream: &mut TcpStream, network: Network, peer_idx: usize, target_peer: SocketAddr, has_sync_node: Arc<AtomicBool>, filter_hashes: Arc<Vec<Vec<u8>>>) -> Result<(), Box<dyn std::error::Error>> {
-    let version_message = MessageCommand::Version(crate::messages::VersionMessage::new(network)).encode(network);
+    let version_message = MessageCommand::Version(primitives::messages::VersionMessage::new(network)).encode(network);
     stream.write_all(&version_message).await?;
 
     if !filter_hashes.is_empty() {
@@ -334,7 +352,7 @@ async fn handle_peer_actions(
 /// Returns an error if writing to the stream fails.
 async fn request_headers(stream: &mut TcpStream, network: Network) -> Result<(), Box<dyn std::error::Error>> {
     let locator_hash = get_locator_hash(network);
-    let getheaders = MessageCommand::GetHeaders(crate::messages::GetHeadersMessage::new(locator_hash));
+    let getheaders = MessageCommand::GetHeaders(primitives::messages::GetHeadersMessage::new(locator_hash));
     stream.write_all(&getheaders.encode(network)).await?;
     Ok(())
 }
