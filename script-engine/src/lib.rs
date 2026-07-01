@@ -449,8 +449,128 @@ impl ExecutionContext {
             script_code,
         }
     }
+}
 
+#[cfg(test)]
+mod vm_tests {
+    use super::*;
+    use crate::transaction::{Transaction, TxIn, TxOut};
+    use secp256k1::{Secp256k1, SecretKey, Message};
+    use sha2::{Sha256, Digest};
 
+    #[test]
+    fn test_minimal_p2pkh_execution() {
+        // This test proves that the minimal opcodes implemented (DUP, HASH160, EQUALVERIFY, CHECKSIG)
+        // are sufficient to fully accept and validate a standard P2PKH transaction script.
+        let secp = Secp256k1::new();
+        let secret_key = SecretKey::from_slice(&[0xcd; 32]).expect("32 bytes");
+        let public_key = secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
+        let pubkey_bytes = public_key.serialize().to_vec();
+
+        // Compute Hash160 of the public key
+        let sha256_hash = Sha256::digest(&pubkey_bytes);
+        let pubkey_hash = ripemd::Ripemd160::digest(&sha256_hash).to_vec();
+
+        // Create a dummy transaction
+        let tx = Transaction {
+            version: 1,
+            inputs: vec![TxIn {
+                prev_txid: [0u8; 32],
+                prev_index: 0,
+                script_sig: vec![],
+                sequence: 0xffffffff,
+            }],
+            outputs: vec![TxOut {
+                value: 50_000,
+                pk_script: vec![],
+            }],
+            lock_time: 0,
+        };
+
+        // For P2PKH, the script_code that is hashed for SIGHASH is the scriptPubKey without any signatures 
+        // We'll construct the raw bytes of the locking script to pass to signature_hash
+        // OP_DUP (0x76) OP_HASH160 (0xa9) PUSH20 (0x14) <hash> OP_EQUALVERIFY (0x88) OP_CHECKSIG (0xac)
+        let mut script_code = vec![0x76, 0xa9, 0x14];
+        script_code.extend_from_slice(&pubkey_hash);
+        script_code.push(0x88);
+        script_code.push(0xac);
+
+        let sighash_type = 1u32; // SIGHASH_ALL
+        let sighash_bytes = tx.signature_hash(0, &script_code, sighash_type);
+        
+        let msg = Message::from_digest(sighash_bytes);
+        let sig = secp.sign_ecdsa(msg, &secret_key);
+        
+        let mut sig_der = sig.serialize_der().to_vec();
+        sig_der.push(sighash_type as u8); // Append SIGHASH_ALL byte
+
+        // The unlocking script (scriptSig)
+        let script_sig_instructions = vec![
+            Instruction::PushData(sig_der),
+            Instruction::PushData(pubkey_bytes),
+        ];
+
+        // The locking script (scriptPubKey)
+        let script_pubkey_instructions = parse_script(&script_code);
+
+        // Execute both
+        let mut context = ExecutionContext::new(tx, 0, script_code);
+        
+        context.execute(&script_sig_instructions).expect("ScriptSig failed");
+        context.execute(&script_pubkey_instructions).expect("ScriptPubKey failed");
+
+        // The final stack must contain exactly one element, which is non-zero (true)
+        assert_eq!(context.stack.len(), 1);
+        assert_eq!(context.stack[0], vec![1]);
+    }
+
+    #[test]
+    fn test_failed_p2pkh_wrong_signature() {
+        let secp = Secp256k1::new();
+        let secret_key = SecretKey::from_slice(&[0xcd; 32]).expect("32 bytes");
+        let wrong_secret = SecretKey::from_slice(&[0xef; 32]).expect("32 bytes");
+        let public_key = secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
+        let pubkey_bytes = public_key.serialize().to_vec();
+
+        let sha256_hash = Sha256::digest(&pubkey_bytes);
+        let pubkey_hash = ripemd::Ripemd160::digest(&sha256_hash).to_vec();
+
+        let tx = Transaction {
+            version: 1,
+            inputs: vec![TxIn { prev_txid: [0u8; 32], prev_index: 0, script_sig: vec![], sequence: 0xffffffff }],
+            outputs: vec![],
+            lock_time: 0,
+        };
+
+        let mut script_code = vec![0x76, 0xa9, 0x14];
+        script_code.extend_from_slice(&pubkey_hash);
+        script_code.push(0x88);
+        script_code.push(0xac);
+
+        let sighash_type = 1u32;
+        let sighash_bytes = tx.signature_hash(0, &script_code, sighash_type);
+        let msg = Message::from_digest(sighash_bytes);
+        
+        // SIGN WITH WRONG SECRET
+        let sig = secp.sign_ecdsa(msg, &wrong_secret);
+        
+        let mut sig_der = sig.serialize_der().to_vec();
+        sig_der.push(sighash_type as u8);
+
+        let script_sig_instructions = vec![Instruction::PushData(sig_der), Instruction::PushData(pubkey_bytes)];
+        let script_pubkey_instructions = parse_script(&script_code);
+
+        let mut context = ExecutionContext::new(tx, 0, script_code);
+        
+        context.execute(&script_sig_instructions).expect("ScriptSig failed");
+        context.execute(&script_pubkey_instructions).expect("ScriptPubKey should not crash, just push false");
+
+        assert_eq!(context.stack.len(), 1);
+        assert_eq!(context.stack[0], Vec::<u8>::new()); // OP_CHECKSIG pushes empty vec on failure
+    }
+}
+
+impl ExecutionContext {
     pub fn execute(&mut self, instructions: &[Instruction]) -> Result<(), String> {
         for inst in instructions {
             match inst {
