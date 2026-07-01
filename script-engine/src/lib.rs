@@ -322,13 +322,99 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_script_op_0() {
-        // OP_0 OP_PUSHBYTES_1 0x42 OP_5
-        let script = vec![0x00, 0x01, 0x42, 0x55];
-        let instructions = parse_script(&script);
-        assert_eq!(instructions.len(), 3);
-        assert_eq!(instructions[0], Instruction::Op(OpCode::Op0));
-        assert_eq!(instructions[1], Instruction::PushData(vec![0x42]));
-        assert_eq!(instructions[2], Instruction::Op(OpCode::OpPushNum(5)));
+    fn test_parse_constants() {
+        let script = vec![0x00, 0x4f, 0x51, 0x60];
+        let inst = parse_script(&script);
+        assert_eq!(inst.len(), 4);
+        assert_eq!(inst[0], Instruction::Op(OpCode::Op0));
+        assert_eq!(inst[1], Instruction::Op(OpCode::Op1Negate));
+        assert_eq!(inst[2], Instruction::Op(OpCode::OpPushNum(1)));
+        assert_eq!(inst[3], Instruction::Op(OpCode::OpPushNum(16)));
+    }
+
+    #[test]
+    fn test_parse_push_bytes() {
+        // OP_PUSHBYTES_3 (0x03) followed by 3 bytes
+        let script = vec![0x03, 0xaa, 0xbb, 0xcc];
+        let inst = parse_script(&script);
+        assert_eq!(inst.len(), 1);
+        assert_eq!(inst[0], Instruction::PushData(vec![0xaa, 0xbb, 0xcc]));
+    }
+
+    #[test]
+    fn test_parse_push_bytes_out_of_bounds() {
+        // OP_PUSHBYTES_5 (0x05) but only 3 bytes provided
+        let script = vec![0x05, 0xaa, 0xbb, 0xcc];
+        let inst = parse_script(&script);
+        assert_eq!(inst.len(), 1);
+        assert_eq!(inst[0], Instruction::Op(OpCode::OpInvalidOpcode));
+    }
+
+    #[test]
+    fn test_parse_pushdata1() {
+        // OP_PUSHDATA1 (0x4c), length is 1 byte (0x02), then 2 bytes data
+        let script = vec![0x4c, 0x02, 0x11, 0x22];
+        let inst = parse_script(&script);
+        assert_eq!(inst.len(), 1);
+        assert_eq!(inst[0], Instruction::PushData(vec![0x11, 0x22]));
+    }
+
+    #[test]
+    fn test_parse_pushdata2() {
+        // OP_PUSHDATA2 (0x4d), length is 2 bytes (0x02 0x00 -> 2), then 2 bytes data
+        let script = vec![0x4d, 0x02, 0x00, 0xaa, 0xbb];
+        let inst = parse_script(&script);
+        assert_eq!(inst.len(), 1);
+        assert_eq!(inst[0], Instruction::PushData(vec![0xaa, 0xbb]));
+    }
+
+    #[test]
+    fn test_parse_pushdata4() {
+        // OP_PUSHDATA4 (0x4e), length is 4 bytes (0x02 0x00 0x00 0x00 -> 2), then 2 bytes data
+        let script = vec![0x4e, 0x02, 0x00, 0x00, 0x00, 0x99, 0x88];
+        let inst = parse_script(&script);
+        assert_eq!(inst.len(), 1);
+        assert_eq!(inst[0], Instruction::PushData(vec![0x99, 0x88]));
+    }
+
+    #[test]
+    fn test_parse_control_and_logic() {
+        let script = vec![0x63, 0x68, 0x69, 0x6a];
+        let inst = parse_script(&script);
+        assert_eq!(inst.len(), 4);
+        assert_eq!(inst[0], Instruction::Op(OpCode::OpIf));
+        assert_eq!(inst[1], Instruction::Op(OpCode::OpEndIf));
+        assert_eq!(inst[2], Instruction::Op(OpCode::OpVerify));
+        assert_eq!(inst[3], Instruction::Op(OpCode::OpReturn));
+    }
+
+    #[test]
+    fn test_parse_nops_and_success() {
+        let script = vec![0x61, 0xb0, 0xb3, 0xbb, 0xfe];
+        let inst = parse_script(&script);
+        assert_eq!(inst.len(), 5);
+        assert_eq!(inst[0], Instruction::Op(OpCode::OpNop));
+        assert_eq!(inst[1], Instruction::Op(OpCode::OpNopFuture(0xb0)));
+        assert_eq!(inst[2], Instruction::Op(OpCode::OpNopFuture(0xb3)));
+        assert_eq!(inst[3], Instruction::Op(OpCode::OpReturnSuccess(0xbb)));
+        assert_eq!(inst[4], Instruction::Op(OpCode::OpReturnSuccess(0xfe)));
+    }
+
+    #[test]
+    fn test_parse_standard_p2pkh() {
+        // OP_DUP OP_HASH160 <20-byte hash> OP_EQUALVERIFY OP_CHECKSIG
+        let mut script = vec![0x76, 0xa9, 0x14];
+        let hash = vec![0xab; 20];
+        script.extend(&hash);
+        script.push(0x88);
+        script.push(0xac);
+
+        let inst = parse_script(&script);
+        assert_eq!(inst.len(), 5);
+        assert_eq!(inst[0], Instruction::Op(OpCode::OpDup));
+        assert_eq!(inst[1], Instruction::Op(OpCode::OpHash160));
+        assert_eq!(inst[2], Instruction::PushData(hash));
+        assert_eq!(inst[3], Instruction::Op(OpCode::OpEqualVerify));
+        assert_eq!(inst[4], Instruction::Op(OpCode::OpCheckSig));
     }
 }
