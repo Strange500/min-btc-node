@@ -199,8 +199,40 @@ impl OpCode {
                 Ok(())
             }
             OpCode::OpCheckSig => {
-                // Placeholder for signature verification logic
-                Err("OP_CHECKSIG not implemented yet".to_string())
+                if context.stack.len() < 2 {
+                    return Err("OP_CHECKSIG requires 2 items on stack".to_string());
+                }
+                let pubkey_bytes = context.stack.pop().unwrap();
+                let sig_bytes = context.stack.pop().unwrap();
+
+                if sig_bytes.is_empty() {
+                    context.stack.push(vec![]); // Push false
+                    return Ok(());
+                }
+
+                let _hash_type = *sig_bytes.last().unwrap() as u32;
+                let der_sig = &sig_bytes[..sig_bytes.len() - 1];
+
+                // Mock hash for structural completeness until the VM takes Tx context.
+                let hash_placeholder = [0u8; 32];
+
+                use secp256k1::{Secp256k1, Message, ecdsa::Signature, PublicKey};
+                let secp = Secp256k1::verification_only();
+                
+                let is_valid = match (PublicKey::from_slice(&pubkey_bytes), Signature::from_der(der_sig)) {
+                    (Ok(pk), Ok(sig)) => {
+                        let msg = Message::from_digest(hash_placeholder);
+                        secp.verify_ecdsa(msg, &sig, &pk).is_ok()
+                    }
+                    _ => false,
+                };
+
+                if is_valid {
+                    context.stack.push(vec![1]); // True
+                } else {
+                    context.stack.push(vec![]); // False
+                }
+                Ok(())
             }
 
             _ => Err(format!("Opcode {:?} not implemented yet", self)),
@@ -395,7 +427,7 @@ pub fn parse_script(script: &[u8]) -> Vec<Instruction> {
 
 
 
-struct ExecutionContext {
+pub struct ExecutionContext {
     stack: Vec<Vec<u8>>,
     alt_stack: Vec<Vec<u8>>,
     exec_stack: Vec<bool>,
@@ -413,63 +445,14 @@ impl ExecutionContext {
     }
 
 
-    fn execute(&mut self, instructions: &[Instruction]) -> Result<(), String> {
+    pub fn execute(&mut self, instructions: &[Instruction]) -> Result<(), String> {
         for inst in instructions {
             match inst {
-                Instruction::Op(op) => self.execute_op(*op)?,
+                Instruction::Op(op) => op.execute(self)?,
                 Instruction::PushData(data) => self.stack.push(data.clone()),
             }
         }
         Ok(())
-    }
-
-    fn execute_op(&mut self, op: OpCode) -> Result<(), String> {
-        match op {
-            OpCode::OpCheckSig => {
-                if self.stack.len() < 2 {
-                    return Err("OP_CHECKSIG requires 2 items on stack".to_string());
-                }
-                let pubkey_bytes = self.stack.pop().unwrap();
-                let sig_bytes = self.stack.pop().unwrap();
-
-                if sig_bytes.is_empty() {
-                    self.stack.push(vec![]); // Push false
-                    return Ok(());
-                }
-
-                // The last byte of the signature is the hashtype
-                let hash_type = *sig_bytes.last().unwrap() as u32;
-                let der_sig = &sig_bytes[..sig_bytes.len() - 1];
-
-                // Note: The VM currently lacks the Tx and input_index context in this stub.
-                // In a real execution, we would call:
-                // let hash = tx.signature_hash(input_index, &subscript, hash_type);
-                // Here we just mock the hash for structural completeness until the VM takes Tx context.
-                let hash_placeholder = [0u8; 32];
-
-                use secp256k1::{Secp256k1, Message, ecdsa::Signature, PublicKey};
-                let secp = Secp256k1::verification_only();
-                
-                let is_valid = match (PublicKey::from_slice(&pubkey_bytes), Signature::from_der(der_sig)) {
-                    (Ok(pk), Ok(sig)) => {
-                        let msg = Message::from_digest(hash_placeholder);
-                        secp.verify_ecdsa(msg, &sig, &pk).is_ok()
-                    }
-                    _ => false,
-                };
-
-                if is_valid {
-                    self.stack.push(vec![1]); // True
-                } else {
-                    self.stack.push(vec![]); // False
-                }
-                Ok(())
-            }
-            _ => {
-                // Ignore other opcodes for now
-                Ok(())
-            }
-        }
     }
 }
 
