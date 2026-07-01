@@ -58,3 +58,12 @@ nix develop
 cargo test
 cargo run --release
 ```
+
+
+
+
+docs used: 
+
+https://learnmeabitcoin.com  
+https://en.bitcoin.it  
+https://bips.dev/  
