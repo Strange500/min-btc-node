@@ -210,18 +210,18 @@ impl OpCode {
                     return Ok(());
                 }
 
-                let _hash_type = *sig_bytes.last().unwrap() as u32;
+                let hash_type = *sig_bytes.last().unwrap() as u32;
                 let der_sig = &sig_bytes[..sig_bytes.len() - 1];
 
-                // Mock hash for structural completeness until the VM takes Tx context.
-                let hash_placeholder = [0u8; 32];
+                // Compute the actual real signature hash using the transaction context!
+                let hash = context.tx.signature_hash(context.input_index, &context.script_code, hash_type);
 
                 use secp256k1::{Secp256k1, Message, ecdsa::Signature, PublicKey};
                 let secp = Secp256k1::verification_only();
                 
                 let is_valid = match (PublicKey::from_slice(&pubkey_bytes), Signature::from_der(der_sig)) {
                     (Ok(pk), Ok(sig)) => {
-                        let msg = Message::from_digest(hash_placeholder);
+                        let msg = Message::from_digest(hash);
                         secp.verify_ecdsa(msg, &sig, &pk).is_ok()
                     }
                     _ => false,
@@ -425,22 +425,28 @@ pub fn parse_script(script: &[u8]) -> Vec<Instruction> {
     instructions
 }
 
-
+use crate::transaction::Transaction;
 
 pub struct ExecutionContext {
-    stack: Vec<Vec<u8>>,
-    alt_stack: Vec<Vec<u8>>,
-    exec_stack: Vec<bool>,
+    pub stack: Vec<Vec<u8>>,
+    pub alt_stack: Vec<Vec<u8>>,
+    pub exec_stack: Vec<bool>,
+    
+    // Transaction context for signature hashing
+    pub tx: Transaction,
+    pub input_index: usize,
+    pub script_code: Vec<u8>,
 }
 
-
-
 impl ExecutionContext {
-    fn new() -> Self {
+    pub fn new(tx: Transaction, input_index: usize, script_code: Vec<u8>) -> Self {
         ExecutionContext {
             stack: Vec::new(),
             alt_stack: Vec::new(),
             exec_stack: Vec::new(),
+            tx,
+            input_index,
+            script_code,
         }
     }
 
